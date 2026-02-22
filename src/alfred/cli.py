@@ -351,7 +351,7 @@ def cmd_process(args: argparse.Namespace) -> None:
     from alfred.curator.process import run_batch
     from alfred._data import get_skills_dir
     try:
-        asyncio.run(run_batch(config, get_skills_dir(), limit=args.limit, dry_run=args.dry_run))
+        asyncio.run(run_batch(config, get_skills_dir(), limit=args.limit, dry_run=args.dry_run, concurrency=args.jobs))
     except KeyboardInterrupt:
         pass
 
@@ -487,6 +487,10 @@ def build_parser() -> argparse.ArgumentParser:
     process_parser.add_argument(
         "--dry-run", action="store_true", default=False,
         help="Show what would be processed without running",
+    )
+    process_parser.add_argument(
+        "--jobs", "-j", type=int, default=4,
+        help="Number of concurrent workers (default: 4)",
     )
 
     # surveyor
