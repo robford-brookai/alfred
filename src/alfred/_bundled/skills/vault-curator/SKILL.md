@@ -662,75 +662,182 @@ A task of `kind: task` with a checklist for sub-project/phase setup: define deli
 
 ---
 
-## 3. Extraction Rules — Decision Tree
+## 3. The Curation Process — Mandatory 7-Step Procedure
 
-When you receive an inbox file, follow this decision tree:
+You MUST follow ALL 7 steps for EVERY inbox file. Do not skip steps. Do not take shortcuts.
 
-### Step 1: Read the inbox file
-Read the file content and frontmatter. Identify `input_type`, `from`, `subject`, and body content.
+---
 
-### Step 2: Pre-flight checks — search for existing records
-Before creating anything, search the vault:
-- **People:** `alfred vault search --glob "person/*.md"` or `alfred vault search --grep "Jane Smith"`
-- **Orgs:** `alfred vault search --glob "org/*.md"`
-- **Projects:** `alfred vault list project`
-- **Conversations:** `alfred vault search --grep "Subject Line"` to find existing threads
+### STEP 1: READ — Understand the input
 
-### Step 3: Extract entities and create records
+Read the inbox file. Identify:
+- **What is this?** Email, chat export, voice memo, meeting notes, document, research, brainstorm, etc.
+- **Who is involved?** Every person, org, or team mentioned by name
+- **What project/topic does this relate to?** Business context, personal context, technical topic
+- **What happened?** Key events, decisions, action items, insights
+- **When?** Dates from the content or frontmatter
 
-#### If input is an EMAIL:
-1. **Person** — If sender is not in vault, create `person/Sender Name.md`
-   - Extract name, email, org from email headers
-   - Status: `active`
-2. **Org** — If sender's org is not in vault and identifiable, create `org/Org Name.md`
-   - Status: `active`
-3. **Conversation** — Create or update `conversation/Subject Line.md`
-   - If new: create with `status: active`, `channel: email`, link participants
-   - If existing: update `message_count`, `last_activity`, append to Activity Log
-   - Set `participants` to include sender and any CC/mentioned people
-   - Link to relevant `project` if identifiable
-4. **Tasks** — If action items are mentioned, create `task/Task Name.md` for each
-   - Status: `todo`, priority: `medium` (adjust if urgency indicated)
-   - Link to conversation and project
-5. **Decisions** — If decisions are communicated, create `decision/Decision Title.md`
-   - Status: `final` (already decided) or `draft` (proposed)
-6. **Notes** — If the email contains reference information worth preserving separately
-   - Status: `draft`, subtype: `reference`
+Write down your analysis before proceeding. You need a clear mental model of the input before creating anything.
 
-#### If input is a VOICE MEMO:
-1. **Note** — Create `note/Voice Memo Title.md`
-   - Subtype: `meeting-notes` or `idea` depending on content
-   - Preserve the transcript/content in the body
-2. **Tasks** — Extract any action items → `task/` records
-3. **People/Orgs** — Create if mentioned and new
-4. **Project link** — Connect to relevant project if identifiable
+---
 
-#### If input is MEETING NOTES:
-1. **Session** — Create a session record (date-organized)
-   - Link all participants, set project
-   - List outputs (other records created)
-2. **Tasks** — Create from action items
-3. **Decisions** — Create from decisions made
-4. **Notes** — Create for key discussion points
-5. **People** — Create for any new attendees
+### STEP 2: SCAN — Search the vault for existing records
 
-#### If input is GENERAL CONTENT:
-1. Identify the best-fit record type(s)
-2. Create appropriate records
-3. Link to relevant entities
+Before creating ANYTHING, search the vault to avoid duplicates and find linking targets:
 
-### Step 4: Cross-link everything
-Every new record must link back to related records:
-- Tasks link to their `project` and `related` conversation
-- Conversations link to `participants`, `project`, `org`
-- People link to their `org`
-- Notes link to `project` and/or `session`
-
-### Step 5: Update the inbox file's conversation link
-If you created a conversation record, update the inbox file's `conversation` frontmatter field:
 ```bash
-alfred vault edit "inbox/filename.md" --set 'conversation="[[conversation/Subject Line]]"'
+# Search for every person mentioned
+alfred vault search --grep "Jane Smith"
+alfred vault search --grep "BuildCorp"
+
+# Browse existing records by type
+alfred vault list person
+alfred vault list org
+alfred vault list project
+
+# Search for related conversations or notes
+alfred vault search --grep "Eagle Farm"
 ```
+
+**You MUST search for every entity you plan to create.** Record what exists and what needs to be created.
+
+---
+
+### STEP 3: EXTRACT — Identify ALL entities to create or update
+
+Make a complete list of every record you will create or update. Categories:
+
+**Standing entities** (create if they don't exist in vault):
+- `person/` — Every identifiable person (full name required, skip first-name-only mentions)
+- `org/` — Every company, organization, team, institution mentioned
+- `project/` — Every project, initiative, product mentioned
+- `location/` — Every physical place mentioned
+
+**Activity records** (almost always create new):
+- `note/` — THE PRIMARY OUTPUT. Every inbox file produces at least one rich note summarizing the content
+- `conversation/` — If the input is a chat/email thread
+- `task/` — Every action item, to-do, follow-up mentioned
+- `event/` — Every scheduled or past event mentioned
+- `decision/` — Every decision made or proposed
+
+**Learning records** (create when the content contains insights):
+- `assumption/` — Beliefs or assumptions stated or challenged
+- `constraint/` — Limitations, rules, regulations mentioned
+- `synthesis/` — Cross-cutting insights or meta-observations
+
+**Minimum output: You MUST create at least one `note/` record for every inbox file, even if the content seems trivial.** A 2-message chat about a quick question still produces a note capturing the topic, context, and answer.
+
+---
+
+### STEP 4: CREATE — Build records with rich content
+
+Create each record with **fully populated frontmatter and substantial body content**.
+
+**Frontmatter rules — fill every applicable field:**
+- `description:` — ALWAYS fill this. Write a concise 1-2 sentence summary. NEVER leave as `null` or empty.
+- `related:` — ALWAYS populate with wikilinks to other records you're creating or that already exist. Minimum 1-3 links.
+- `project:` — Link to relevant project if any connection exists
+- `org:` — Link to relevant org
+- `participants:` — List all people involved
+
+**Body content rules — write substantial content, not stubs:**
+- **Notes:** Write a proper summary with sections. Include: context, key points, analysis, quotes if notable. Aim for 200-1000 words depending on source richness.
+- **Person records:** Fill in `description` (role/context), `org`, `role`, `email` if available. The body gets base view embeds.
+- **Org records:** Fill in `description` (what they do, relationship to vault owner), `org_type`, `website` if known.
+- **Project records:** Fill in `description` (objective, scope), `client`, `owner` if known.
+- **Task records:** Fill in `description` (what specifically needs doing and why), link to `project` and `related` conversation/note.
+- **Conversation records:** Include Current State section, Activity Log table, and link ALL participants.
+
+**Example of a GOOD note vs BAD note:**
+
+BAD (stub — unacceptable):
+```yaml
+description: null
+related: []
+```
+```
+# Some Topic
+Content here.
+```
+
+GOOD (enriched — this is the standard):
+```yaml
+description: "Workshop planning session for EuroProfil customer service AI training, covering 3.5-hour curriculum design with hands-on exercises"
+related: ["[[org/EuroProfil]]", "[[person/Test User]]", "[[note/AI Training Best Practices]]"]
+project: "[[project/EuroProfil AI Training]]"
+```
+```
+# EuroProfil Customer Service AI Training Workshop Plan
+
+## Context
+David was contracted to deliver practical AI training for EuroProfil's customer service team...
+
+## Workshop Structure
+### Block 1: Baseline Alignment (30 min)
+...
+```
+
+---
+
+### STEP 5: INTERLINK — Wire everything together
+
+After creating all records, go back and cross-link them. This is the most important step.
+
+**Every record you created must link to every other relevant record:**
+
+```bash
+# Person → add to their org's related, add org link to person
+alfred vault edit "person/Jane Smith.md" --set 'org="[[org/BuildCorp]]"'
+alfred vault edit "person/Jane Smith.md" --set 'related=["[[conversation/Eagle Farm Drainage Update]]", "[[project/Eagle Farm]]"]'
+
+# Note → link to all mentioned entities
+alfred vault edit "note/Workshop Plan.md" --set 'related=["[[org/EuroProfil]]", "[[person/Test User]]"]'
+alfred vault edit "note/Workshop Plan.md" --set 'project="[[project/EuroProfil AI Training]]"'
+
+# Project → link to client org and owner
+alfred vault edit "project/Eagle Farm.md" --append 'related="[[conversation/Eagle Farm Drainage Update]]"'
+
+# Task → link to project and source conversation/note
+alfred vault edit "task/Review Quote.md" --set 'project="[[project/Eagle Farm]]"' --set 'related=["[[conversation/Eagle Farm Drainage Update]]"]'
+```
+
+**Interlinking checklist — verify ALL of these:**
+- [ ] Every `person/` links to their `org` (if known)
+- [ ] Every `person/` has `related` links to conversations/notes they appear in
+- [ ] Every `org/` has `related` links to projects and people
+- [ ] Every `note/` has `related` links to all people, orgs, projects mentioned in it
+- [ ] Every `note/` has `project` set if it relates to any project
+- [ ] Every `task/` links to its `project` and the source `note/` or `conversation/`
+- [ ] Every `conversation/` has `participants` listing all people
+- [ ] Every `conversation/` links to its `project` and `org`
+- [ ] Every `decision/` links to `project` and `decided_by` people
+- [ ] Every new record has at least 1 item in `related`
+
+---
+
+### STEP 6: VERIFY — Quality check before finishing
+
+Review everything you created:
+
+1. **No empty descriptions** — Every record has a meaningful `description` field
+2. **No orphan records** — Every record links to at least one other record via `related`, `project`, `org`, or `participants`
+3. **No missing base embeds** — Entity records (person, org, project) include `![[*.base#Section]]` embeds
+4. **English only** — All text is in English (translate if source was another language)
+5. **Proper wikilink format** — All links use `"[[type/Record Name]]"` format
+6. **Rich body content** — Notes have substantial summaries, not just a title
+
+If anything fails these checks, fix it before proceeding.
+
+---
+
+### STEP 7: MOVE — Mark the inbox file as processed
+
+Move the inbox file to the processed directory:
+```bash
+alfred vault move "inbox/filename.md" "inbox/processed/filename.md"
+```
+
+**NEVER move the file before completing Steps 1-6.**
 
 ---
 
@@ -921,19 +1028,10 @@ Attendees: Henry, Sarah Chen, Mike Torres
 
 ---
 
-## 6. Pre-flight Checks
+## 6. Anti-patterns — What NOT To Do
 
-Before creating ANY record:
-
-1. **Search for duplicates** — `alfred vault search --glob "person/*.md"`, `alfred vault list org`, etc.
-2. **Check aliases** — `alfred vault search --grep "jane@example.com"` to find by email or partial name.
-3. **Check conversations** — `alfred vault search --grep "Subject Line"` to match by subject or thread ID.
-4. **If unsure, don't create** — If a person is mentioned by first name only without enough context to identify them, don't create a person record. Note them in the conversation/note body instead.
-
----
-
-## 7. Anti-patterns — What NOT To Do
-
+- **Don't create empty/stub records** — Every record must have a filled `description`, populated `related` links, and substantial body content. If you find yourself creating a record with `description: null` and `related: []`, you are doing it wrong.
+- **Don't skip interlinking** — Step 5 is mandatory. Every record must connect to other records. An orphan record with no links is useless.
 - **Don't invent data** — Only create records from information actually present in the input. Don't guess email addresses, phone numbers, or relationships.
 - **Don't skip base view embeds** — Every entity record (person, org, project, etc.) MUST include the appropriate `![[*.base#Section]]` embeds in the body. These are what make Obsidian's live views work.
 - **Don't break frontmatter format** — Always use proper YAML. Quote wikilinks: `"[[path/Name]]"`. Use arrays for lists: `["[[link1]]", "[[link2]]"]`.
@@ -942,17 +1040,4 @@ Before creating ANY record:
 - **Don't use bare paths in frontmatter** — Always use `"[[wikilink]]"` format, not plain strings for references.
 - **Don't create records for vague references** — "Tom from the council" without a surname is too vague for a person record. Mention in body text instead.
 - **Don't set status: processed on inbox files** — Curator handles this after you finish.
-
----
-
-## 8. Key Principles
-
-1. **ALWAYS create at least one vault record.** Every inbox file MUST result in at least one note, conversation, or other record in the vault — no exceptions. Even short or trivial conversations should produce a `note/` record summarizing the topic. Never just move a file to processed without creating vault records.
-2. **Link aggressively** — The power of the vault is in connections. Every record should link to related entities. Extract ALL people, orgs, projects, and topics mentioned and create or link to their records. A well-curated record has 3-10 wikilinks.
-3. **Enrich, don't just copy** — Don't create stub records with empty fields. Fill in descriptions, summarize content, identify relationships. A vault record should be more useful than the raw input.
-4. **Check context first** — Before creating a new person/org/project, verify it doesn't already exist.
-5. **Follow templates exactly** — Use the frontmatter schemas above. Don't add or rename fields.
-6. **Be conservative with status** — New tasks: `todo`. New conversations: `active`. New notes: `draft`. New decisions: `draft` (unless clearly already decided → `final`).
-7. **Preserve raw content** — The original input content should be preserved in conversation activity logs, notes, or session records.
-8. **Use today's date** — Set `created` to the inbox file's date or today's date.
-9. **One record per file** — Each vault record is a single .md file with frontmatter.
+- **Don't skip the 7-step process** — Every inbox file goes through all 7 steps. No shortcuts.
