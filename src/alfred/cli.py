@@ -58,7 +58,8 @@ def cmd_up(args: argparse.Namespace) -> None:
 
     if foreground:
         # Run in foreground (current behavior) — used by --foreground, --live, and --_internal-foreground
-        _setup_logging_from_config(raw)
+        if not live_mode:
+            _setup_logging_from_config(raw)
         from alfred.orchestrator import run_all
         from alfred._data import get_skills_dir
         run_all(raw, only=args.only, skills_dir=get_skills_dir(), pid_path=pid_path, live_mode=live_mode)

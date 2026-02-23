@@ -12,8 +12,17 @@ from pathlib import Path
 from typing import Any
 
 
+def _silence_stdio() -> None:
+    """Redirect stdout/stderr to devnull in child processes for live mode."""
+    devnull = open(os.devnull, "w")  # noqa: SIM115 — intentionally kept open for process lifetime
+    sys.stdout = devnull
+    sys.stderr = devnull
+
+
 def _run_curator(raw: dict[str, Any], skills_dir: str, suppress_stdout: bool = False) -> None:
     """Curator daemon process entry point."""
+    if suppress_stdout:
+        _silence_stdio()
     from alfred.curator.config import load_from_unified
     from alfred.curator.utils import setup_logging
     config = load_from_unified(raw)
@@ -25,6 +34,8 @@ def _run_curator(raw: dict[str, Any], skills_dir: str, suppress_stdout: bool = F
 
 def _run_janitor(raw: dict[str, Any], skills_dir: str, suppress_stdout: bool = False) -> None:
     """Janitor watch daemon process entry point."""
+    if suppress_stdout:
+        _silence_stdio()
     from alfred.janitor.config import load_from_unified
     from alfred.janitor.utils import setup_logging
     config = load_from_unified(raw)
@@ -39,6 +50,8 @@ def _run_janitor(raw: dict[str, Any], skills_dir: str, suppress_stdout: bool = F
 
 def _run_distiller(raw: dict[str, Any], skills_dir: str, suppress_stdout: bool = False) -> None:
     """Distiller watch daemon process entry point."""
+    if suppress_stdout:
+        _silence_stdio()
     from alfred.distiller.config import load_from_unified
     from alfred.distiller.utils import setup_logging
     config = load_from_unified(raw)
@@ -56,13 +69,13 @@ _MISSING_DEPS_EXIT = 78  # exit code signaling missing optional dependencies
 
 def _run_surveyor(raw: dict[str, Any], suppress_stdout: bool = False) -> None:
     """Surveyor daemon process entry point."""
+    if suppress_stdout:
+        _silence_stdio()
     try:
         from alfred.surveyor.config import load_from_unified
         from alfred.surveyor.utils import setup_logging
         from alfred.surveyor.daemon import Daemon
     except ImportError as e:
-        print(f"  [surveyor] ERROR: missing dependencies: {e}")
-        print(f"  [surveyor] Install with: pip install alfred-vault[all]")
         sys.exit(_MISSING_DEPS_EXIT)
 
     config = load_from_unified(raw)
@@ -115,7 +128,8 @@ def run_all(
             print(f"Available: {', '.join(TOOL_RUNNERS.keys())}")
             sys.exit(1)
 
-    print(f"Starting daemons: {', '.join(tools)}")
+    if not live_mode:
+        print(f"Starting daemons: {', '.join(tools)}")
 
     processes: dict[str, multiprocessing.Process] = {}
     restart_counts: dict[str, int] = {}

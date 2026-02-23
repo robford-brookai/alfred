@@ -28,6 +28,7 @@ class WorkerInfo:
     pid: int | None = None
     restart_count: int = 0
     exit_code: int | None = None
+    last_death: float = 0.0     # monotonic time of last crash detection
 
 
 @dataclass
@@ -509,6 +510,7 @@ def run_live_dashboard(
                     break
 
                 # Update worker health
+                now = time.monotonic()
                 with data.lock:
                     for tool in list(active_tools):
                         p = processes.get(tool)
@@ -518,7 +520,8 @@ def run_live_dashboard(
                         if p.is_alive():
                             w.status = "running"
                             w.pid = p.pid
-                        else:
+                        elif w.status != "restarting":
+                            # First detection of death — record time, don't restart yet
                             exit_code = p.exitcode
                             w.exit_code = exit_code
                             w.pid = None
@@ -528,6 +531,7 @@ def run_live_dashboard(
                                 active_tools = [t for t in active_tools if t != tool]
                                 continue
 
+                            w.last_death = now
                             restart_counts[tool] = restart_counts.get(tool, 0) + 1
                             w.restart_count = restart_counts[tool]
 
@@ -535,12 +539,12 @@ def run_live_dashboard(
                                 w.status = "restarting"
                             else:
                                 w.status = "stopped"
-                                continue
 
-                # Restart dead workers (outside the lock)
+                # Restart dead workers after cooldown (outside the lock)
+                restart_cooldown = 5.0  # seconds — matches original monitor loop
                 for tool in list(active_tools):
                     w = data.workers.get(tool)
-                    if w and w.status == "restarting":
+                    if w and w.status == "restarting" and (now - w.last_death) >= restart_cooldown:
                         new_p = start_process(tool)
                         processes[tool] = new_p
                         with data.lock:
