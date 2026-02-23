@@ -127,8 +127,11 @@ class Embedder:
                     return data["data"][0]["embedding"]
                 return data["embedding"]
             except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as e:
+                detail = ""
+                if isinstance(e, httpx.HTTPStatusError):
+                    detail = e.response.text[:200]
                 delay = RETRY_BASE_DELAY * (2 ** attempt)
-                log.warning("embedder.embed_retry", attempt=attempt + 1, error=str(e), delay=delay)
+                log.warning("embedder.embed_retry", attempt=attempt + 1, error=str(e), detail=detail, delay=delay)
                 await asyncio.sleep(delay)
         log.error("embedder.embed_failed", max_retries=MAX_RETRIES)
         return None

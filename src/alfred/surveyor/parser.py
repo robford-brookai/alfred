@@ -10,8 +10,10 @@ import frontmatter
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
 
-# Max chars for embedding text (nomic-embed-text has ~8K token context)
-MAX_EMBEDDING_CHARS = 32_000
+# Max chars for embedding text — nomic-embed-text has 8192 token context,
+# ~1.5 chars/token for English → hard limit around 12,200 chars.
+# Use 8,000 chars to leave margin for non-English text and special tokens.
+MAX_EMBEDDING_CHARS = 8_000
 
 # Frontmatter keys to include in embedding text
 EMBEDDING_FM_KEYS = ["type", "status", "name", "description", "intent", "source", "channel"]
