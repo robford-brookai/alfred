@@ -1,213 +1,152 @@
-# Alfred
+<div align="center">
 
-Alfred is a set of AI-powered background services that keep your [Obsidian](https://obsidian.md) vault organized, connected, and intelligent — without you doing the busywork.
+# 🎩 Alfred
 
-You drop a raw file into your inbox. Alfred turns it into a structured record, links it to the right projects and people, scans for broken references, extracts decisions and assumptions you made along the way, and maps how everything in your vault relates to everything else. It runs quietly in the background.
+**Your Obsidian vault runs itself.**
 
-## What does that look like?
+Drop files into your inbox. Alfred structures, links, and organizes everything — automatically.
+
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-green.svg)](https://python.org)
+[![PyPI](https://img.shields.io/pypi/v/alfred-vault.svg)](https://pypi.org/project/alfred-vault/)
+
+</div>
+
+---
 
 You paste a meeting transcript into `inbox/`. A few seconds later, Alfred has:
 
 - Created a **conversation** record with participants, status, and activity log
 - Created or updated **person** records for everyone mentioned
 - Filed **tasks** with assignees and linked them to the right project
-- Linked everything together with wikilinks so it shows up in the right views automatically
+- Connected everything with wikilinks so it shows up in the right Obsidian views automatically
 
-Later, the janitor notices a project page has a broken link and fixes it. The distiller reads your recent session notes and extracts a **decision** record ("We chose Postgres over DynamoDB") with rationale and evidence links. The surveyor notices that three unrelated notes are all about the same theme and tags them as a cluster.
+You didn't trigger any of this. It just happened.
 
-You don't trigger any of this. It just happens.
+---
 
-## Quick Start
+## The Problem
 
-**Prerequisites:** Python 3.11+ and an AI agent backend. The default is [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` on PATH). Alternatives: Zo Computer (HTTP API) or OpenClaw.
+Obsidian is powerful, but keeping a vault organized is a full-time job. You end up with orphaned notes, broken links, knowledge trapped inside meeting transcripts, and no clear picture of how your projects actually connect. The more you use it, the more maintenance it demands.
+
+## The Fix
+
+Alfred is a set of AI-powered background services — four tools that continuously watch, clean, extract, and connect your vault while you do real work.
+
+| Tool | What it does |
+|------|-------------|
+| **Curator** | Watches `inbox/` and turns raw files (emails, transcripts, notes) into structured records |
+| **Janitor** | Scans for broken links, missing frontmatter, orphaned files — and fixes them |
+| **Distiller** | Reads your notes and extracts decisions, assumptions, and constraints into an evidence graph |
+| **Surveyor** | Embeds your vault into vectors, clusters by semantic similarity, and writes relationship tags back |
+
+## Quickstart
 
 ```bash
 pip install alfred-vault
-alfred quickstart
+alfred quickstart          # interactive setup wizard
+alfred up                  # start background daemons
 ```
 
-The quickstart wizard walks you through choosing a vault path, agent backend, and optional surveyor setup. It scaffolds the vault directory structure (including templates, base views, and a `user-profile.md`), writes `config.yaml`, and offers to start daemons immediately.
+That's it. The wizard handles vault path, agent backend, and directory scaffolding.
 
-```bash
-alfred up          # start background daemons
-alfred up --live   # start with real-time TUI dashboard
-alfred status      # check what's running
-alfred down        # stop everything
-```
+**Prerequisites:** Python 3.11+ and an AI agent on PATH. Default is [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Also supports Zo Computer (HTTP) and OpenClaw.
 
-## The Four Tools
+## How It Works
 
-**Curator** watches your `inbox/` folder. When a new file appears (email, voice memo transcript, raw notes), curator processes it through a 4-stage pipeline: (1) an LLM analyzes the content and creates a rich note, (2) pure-Python entity resolution deduplicates and creates people, orgs, projects, and other entities, (3) interlinking wires up wikilinks between the note and all entities, and (4) a per-entity LLM pass enriches each record with substantive body content and filled frontmatter. The result is a dense, well-connected graph — not stubs.
+### Curator — Inbox → Structure
 
-Entity extraction is context-aware: Alfred reads your `user-profile.md` to understand what's relevant to you. It only creates records for entities you directly interact with — not things merely mentioned or analyzed in your notes.
+A new file appears in `inbox/`. Curator reads it, passes it to your AI agent with full vault context, and the agent creates whatever records the content calls for — conversations, people, tasks — all linked together.
 
-**Janitor** periodically scans every file in your vault for structural problems: broken wikilinks, missing or invalid frontmatter fields, orphaned files with no connections, stub records with no real content. It uses a 3-stage pipeline: (1) pure-Python autofix for deterministic issues like invalid types, missing fields, and field type mismatches, (2) per-file LLM calls for ambiguous broken wikilink repair with candidate matching, and (3) per-file LLM enrichment of stub records using only existing vault context and verifiable public facts — no generated filler.
+### Janitor — Entropy → Order
 
-**Distiller** reads your operational records — conversations, session logs, project notes — and identifies latent knowledge worth extracting. It uses a multi-stage pipeline: Pass A extracts learnings per-source-record via LLM, deduplicates and merges across sources with fuzzy title matching (pure Python), then creates well-formed learning records via focused per-learning LLM calls. Pass B performs cross-learning meta-analysis — scanning the entire learning graph for contradictions between decisions, shared assumptions, and emergent syntheses, creating higher-order records that link the reasoning graph together. The result is an evidence graph that evolves from having things to having reasoning.
+Periodically sweeps every file for structural problems: broken wikilinks, invalid frontmatter, orphaned files, stub records. In fix mode, hands the issues to the AI agent to repair automatically.
 
-**Surveyor** works differently from the other three. It embeds your vault content into vectors (via Ollama locally or an OpenAI-compatible API), clusters records by semantic similarity using HDBSCAN + Leiden community detection, asks an LLM to label the clusters, and writes relationship tags and wikilinks back into your files.
+### Distiller — Notes → Knowledge
 
-## Live Dashboard
+Reads operational records (conversations, session logs, project notes) and surfaces latent knowledge worth extracting. Creates epistemic records: assumptions with confidence levels, decisions with rationale, constraints, contradictions, and syntheses. These form an evidence graph that evolves with your vault.
 
-```bash
-alfred up --live
-```
+### Surveyor — Isolation → Connection
 
-The live dashboard shows a 2x2 grid with one panel per worker. Each panel displays:
-
-- **Health indicator** — healthy, degraded, failing, stopped, or restarting
-- **Current pipeline step** — what the worker is doing right now
-- **Interpreted event feed** — human-readable status messages instead of raw log lines, color-coded by severity (green=success, yellow=warning, red=error)
-- **LLM usage** — call count and token/character usage
-- **Footer** — uptime, active workers, aggregate error/warning counts, recent vault mutations
-
-The dashboard interprets ~60+ structlog events into meaningful messages like "Stage 1 done — 3 entities found", "Created person/John Doe", or "Sweep done — 10/12 issues fixed". It also detects silent failures: pipelines that "complete" with zero results, manifests that weren't written, and poor fix rates.
+Embeds vault content into vectors (Ollama locally or OpenAI-compatible API), clusters with HDBSCAN + Leiden community detection, asks an LLM to label the clusters, and writes relationship tags and wikilinks back into files. Three notes about the same theme that you never connected? Surveyor finds them.
 
 ## Install
 
 ```bash
-# Base install (curator + janitor + distiller)
+# Base (curator + janitor + distiller)
 pip install alfred-vault
 
-# Full install (adds surveyor — requires Ollama for embeddings + OpenRouter for labeling)
+# Full (adds surveyor — requires Ollama + OpenRouter)
 pip install "alfred-vault[all]"
 
 # From source
 git clone https://github.com/ssdavidai/alfred.git
-cd alfred
-pip install -e .          # base
-pip install -e ".[all]"   # full
+cd alfred && pip install -e ".[all]"
 ```
-
-## CLI
-
-```bash
-# Daemon management
-alfred up                              # start all daemons (background)
-alfred up --foreground                 # stay attached (dev/debug)
-alfred up --live                       # start with real-time TUI dashboard
-alfred up --only curator,janitor       # start specific tools
-alfred down                            # stop daemons
-alfred status                          # per-tool status overview
-
-# Batch processing
-alfred process                         # batch-process all inbox files (Rich TUI)
-alfred process -j 8                    # 8 parallel workers (default: 4)
-alfred process -n 10                   # process only 10 files
-alfred process --dry-run               # show what would be processed
-
-# Bulk import
-alfred ingest conversations.json       # split ChatGPT/Anthropic export into inbox files
-alfred ingest export.json --dry-run    # preview without writing
-
-# Run tools individually
-alfred curator                         # curator daemon (foreground)
-alfred janitor scan                    # structural scan, print report
-alfred janitor fix                     # scan + AI agent fix
-alfred janitor watch                   # periodic sweep daemon
-alfred distiller scan                  # find extraction candidates
-alfred distiller run                   # scan + extract knowledge records
-alfred distiller watch                 # periodic extraction daemon
-alfred surveyor                        # full embed/cluster/label/write pipeline
-
-# Direct vault operations
-alfred vault create <type> <name>      # create a record
-alfred vault read <path>               # read a record
-alfred vault edit <path>               # edit a record
-alfred vault list [type]               # list records
-
-# Run external commands with vault context
-alfred exec -- <command>               # injects ALFRED_VAULT_PATH etc.
-alfred exec --scope curator -- <cmd>   # also sets ALFRED_VAULT_SCOPE
-```
-
-All commands accept `--config path/to/config.yaml` (default: `config.yaml` in cwd).
-
-## Configuration
-
-`alfred quickstart` generates both files interactively. To configure manually instead:
-
-```bash
-cp config.yaml.example config.yaml
-cp .env.example .env
-# Edit both files
-```
-
-`config.yaml` has sections for `vault`, `agent`, `logging`, and each tool. Environment variables are substituted via `${VAR}` syntax. See `config.yaml.example` for all options.
-
-### User Profile
-
-Alfred uses a `user-profile.md` file in your vault root to understand who you are. This helps entity extraction focus on things relevant to you rather than creating records for every person, company, or topic mentioned in your notes.
-
-The quickstart wizard creates a template. Fill it in with your name, work context, and interests. If the file is empty or missing, Alfred falls back to general-purpose extraction.
 
 ## Agent Backends
 
-Curator, janitor, and distiller delegate the actual reading and writing to an AI agent. You choose which one:
-
-| Backend | How it runs | Setup |
-|---------|------------|-------|
-| **Claude Code** (default) | `claude -p` subprocess | Install [Claude Code](https://docs.anthropic.com/en/docs/claude-code), ensure `claude` is on PATH |
+| Backend | Type | Setup |
+|---------|------|-------|
+| **Claude Code** (default) | Subprocess | Install [Claude Code](https://docs.anthropic.com/en/docs/claude-code), `claude` on PATH |
 | **Zo Computer** | HTTP API | Set `ZO_API_KEY` in `.env` |
-| **OpenClaw** | `openclaw` subprocess | Install OpenClaw, ensure `openclaw` is on PATH |
+| **OpenClaw** | Subprocess | Install OpenClaw, `openclaw` on PATH |
 
 Set `agent.backend` in `config.yaml` to `claude`, `zo`, or `openclaw`.
 
 ## Vault Structure
 
-The vault uses structured Markdown files with YAML frontmatter. Records link to each other with `[[wikilinks]]` — open any project page and you'll see live tables of its tasks, conversations, sessions, and people, all populated automatically.
-
-**20 record types:**
+Structured Markdown with YAML frontmatter. 20 record types across three categories:
 
 | Category | Types |
 |----------|-------|
-| Operational | project, task, session, conversation, input, note, process, run, event, thread |
-| Entity | person, org, location, account, asset |
-| Epistemic | assumption, decision, constraint, contradiction, synthesis |
+| **Operational** | project, task, session, conversation, input, note, process, run, event, thread |
+| **Entity** | person, org, location, account, asset |
+| **Epistemic** | assumption, decision, constraint, contradiction, synthesis |
 
-`alfred quickstart` scaffolds the full directory structure with templates, base view definitions, and starter views (Home, CRM, Task Manager).
+Records link via `[[wikilinks]]` — open any project page and you'll see live tables of tasks, conversations, and people, populated automatically.
 
-### Template System
+## CLI Reference
 
-Each record type has a template in `_templates/` that defines default frontmatter fields and body structure. Templates include base-view embeds (e.g., `![[project.base#Tasks]]`) that render live Dataview tables in Obsidian.
+```bash
+# Daemons
+alfred up                              # start all (background)
+alfred up --foreground                 # attached mode (dev/debug)
+alfred up --only curator,janitor       # start specific tools
+alfred down                            # stop
+alfred status                          # overview
 
-When records are created — whether by the curator pipeline, vault CLI, or manual creation — templates are automatically applied. Even when custom body content is provided (e.g., during entity creation), base-view embeds are preserved and appended to ensure every record gets its Dataview sections.
+# Individual tools
+alfred curator                         # curator daemon (foreground)
+alfred janitor scan                    # scan + report
+alfred janitor fix                     # scan + AI fix
+alfred janitor watch                   # periodic sweep daemon
+alfred distiller scan                  # find candidates
+alfred distiller run                   # scan + extract
+alfred distiller watch                 # periodic daemon
+alfred surveyor                        # full pipeline
 
-## Data & State
+# Vault operations
+alfred vault create <type> <name>      # create record
+alfred vault read <path>               # read record
+alfred vault edit <path>               # edit record
+alfred vault list [type]               # list records
 
-Runtime state lives in `data/`. The vault itself is the source of truth — state files are bookkeeping and can be deleted to force a full re-process.
-
-| File | Purpose |
-|------|---------|
-| `data/*_state.json` | Per-tool processing state (what's been seen, sweep history, etc.) |
-| `data/vault_audit.log` | Append-only JSONL log of every vault mutation |
-| `data/alfred.pid` | PID file for the background daemon |
-| `data/*.log` | Per-tool log files |
-
-## Architecture
-
-```
-src/alfred/
-  cli.py               # CLI dispatcher
-  daemon.py             # background process management
-  orchestrator.py       # multiprocess daemon manager with auto-restart
-  dashboard.py          # Rich TUI live dashboard (2x2 worker feed grid)
-  quickstart.py         # interactive setup wizard
-  _data.py              # bundled resource locator (importlib.resources)
-
-  curator/              # inbox processor (4-stage pipeline)
-  janitor/              # vault quality scanner + fixer (3-stage pipeline)
-  distiller/            # knowledge extractor (2-pass pipeline)
-  surveyor/             # semantic embedder + clusterer (4-stage pipeline)
-
-  vault/                # vault operations layer (CRUD, mutation log, scoping)
-
-  _bundled/             # data files shipped in the wheel
-    skills/             # agent skill prompts (one per tool)
-    scaffold/           # vault directory structure, templates, base views
+# External commands with vault context
+alfred exec -- <command>               # injects ALFRED_VAULT_PATH
+alfred exec --scope curator -- <cmd>   # also sets ALFRED_VAULT_SCOPE
 ```
 
-Each tool follows the same module pattern: `config.py` (typed dataclass), `daemon.py` (async entry point), `state.py` (JSON persistence), `backends/` (agent interface), `pipeline.py` (multi-stage processing), `cli.py` (subcommands).
+## Configuration
+
+```bash
+alfred quickstart                      # recommended: interactive setup
+# — or —
+cp config.yaml.example config.yaml
+cp .env.example .env
+```
+
+`config.yaml` has sections for `vault`, `agent`, `logging`, and each tool. Supports `${VAR}` environment variable substitution. See [`config.yaml.example`](config.yaml.example) for all options.
 
 ## Documentation
 
@@ -223,6 +162,12 @@ Full documentation is available in [`docs/`](docs/) and on the [GitHub Wiki](htt
 - [Agent Backends](docs/Agent-Backends.md)
 - [User Profile](docs/User-Profile.md)
 
+## Contributing
+
+Alfred is early-stage and actively developed. Issues, PRs, and ideas are welcome.
+
 ## License
 
-MIT
+[MIT](LICENSE)
+
+Built with ❤️ by Test User -> ScreenlessDad.com
