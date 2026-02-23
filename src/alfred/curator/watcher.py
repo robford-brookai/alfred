@@ -34,7 +34,9 @@ class InboxHandler(FileSystemEventHandler):
 
     def _handle(self, src_path: str) -> None:
         path = Path(src_path)
-        # Skip processed/ subdirectory and dotfiles
+        # Skip directories, processed/ subdirectory, and dotfiles
+        if path.is_dir():
+            return
         if "processed" in path.parts:
             return
         if path.name.startswith("."):
