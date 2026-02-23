@@ -435,22 +435,25 @@ async def run_watch(
         now = datetime.now(timezone.utc)
         hours_since_deep = (now - last_deep).total_seconds() / 3600
 
-        if hours_since_deep >= deep_interval_hours:
-            log.info("daemon.deep_extraction")
-            await run_extraction(config, state, skills_dir)
-            last_deep = now
-        else:
-            # Light pass — just scan, no agent invocation
-            log.info("daemon.light_scan")
-            candidates = scan_candidates(
-                vault_path=config.vault.vault_path,
-                ignore_dirs=config.vault.ignore_dirs,
-                ignore_files=config.vault.ignore_files,
-                source_types=config.extraction.source_types,
-                threshold=config.extraction.candidate_threshold,
-                distilled_files=state.get_distilled_md5s(),
-            )
-            if candidates:
-                log.info("daemon.pending_candidates", count=len(candidates))
+        try:
+            if hours_since_deep >= deep_interval_hours:
+                log.info("daemon.deep_extraction")
+                await run_extraction(config, state, skills_dir)
+                last_deep = now
+            else:
+                # Light pass — just scan, no agent invocation
+                log.info("daemon.light_scan")
+                candidates = scan_candidates(
+                    vault_path=config.vault.vault_path,
+                    ignore_dirs=config.vault.ignore_dirs,
+                    ignore_files=config.vault.ignore_files,
+                    source_types=config.extraction.source_types,
+                    threshold=config.extraction.candidate_threshold,
+                    distilled_files=state.get_distilled_md5s(),
+                )
+                if candidates:
+                    log.info("daemon.pending_candidates", count=len(candidates))
+        except Exception:
+            log.exception("daemon.extraction_error")
 
         await asyncio.sleep(interval)

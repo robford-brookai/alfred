@@ -12,35 +12,43 @@ from pathlib import Path
 from typing import Any
 
 
-def _silence_stdio() -> None:
-    """Redirect stdout/stderr to devnull in child processes for live mode."""
-    devnull = open(os.devnull, "w")  # noqa: SIM115 — intentionally kept open for process lifetime
-    sys.stdout = devnull
-    sys.stderr = devnull
+def _silence_stdio(log_file: str | None = None) -> None:
+    """Redirect stdout/stderr away from the terminal in child processes for live mode.
+
+    stderr goes to the log file (if given) so uncaught tracebacks are preserved
+    for debugging. stdout goes to devnull.
+    """
+    sys.stdout = open(os.devnull, "w")  # noqa: SIM115 — kept open for process lifetime
+    if log_file:
+        sys.stderr = open(log_file, "a")  # noqa: SIM115
+    else:
+        sys.stderr = sys.stdout
 
 
 def _run_curator(raw: dict[str, Any], skills_dir: str, suppress_stdout: bool = False) -> None:
     """Curator daemon process entry point."""
+    log_cfg = raw.get("logging", {})
+    log_file = f"{log_cfg.get('dir', './data')}/curator.log"
     if suppress_stdout:
-        _silence_stdio()
+        _silence_stdio(log_file)
     from alfred.curator.config import load_from_unified
     from alfred.curator.utils import setup_logging
     config = load_from_unified(raw)
-    log_cfg = raw.get("logging", {})
-    setup_logging(level=log_cfg.get("level", "INFO"), log_file=f"{log_cfg.get('dir', './data')}/curator.log", suppress_stdout=suppress_stdout)
+    setup_logging(level=log_cfg.get("level", "INFO"), log_file=log_file, suppress_stdout=suppress_stdout)
     from alfred.curator.daemon import run
     asyncio.run(run(config, Path(skills_dir)))
 
 
 def _run_janitor(raw: dict[str, Any], skills_dir: str, suppress_stdout: bool = False) -> None:
     """Janitor watch daemon process entry point."""
+    log_cfg = raw.get("logging", {})
+    log_file = f"{log_cfg.get('dir', './data')}/janitor.log"
     if suppress_stdout:
-        _silence_stdio()
+        _silence_stdio(log_file)
     from alfred.janitor.config import load_from_unified
     from alfred.janitor.utils import setup_logging
     config = load_from_unified(raw)
-    log_cfg = raw.get("logging", {})
-    setup_logging(level=log_cfg.get("level", "INFO"), log_file=f"{log_cfg.get('dir', './data')}/janitor.log", suppress_stdout=suppress_stdout)
+    setup_logging(level=log_cfg.get("level", "INFO"), log_file=log_file, suppress_stdout=suppress_stdout)
     from alfred.janitor.state import JanitorState
     from alfred.janitor.daemon import run_watch
     state = JanitorState(config.state.path, config.state.max_sweep_history)
@@ -50,13 +58,14 @@ def _run_janitor(raw: dict[str, Any], skills_dir: str, suppress_stdout: bool = F
 
 def _run_distiller(raw: dict[str, Any], skills_dir: str, suppress_stdout: bool = False) -> None:
     """Distiller watch daemon process entry point."""
+    log_cfg = raw.get("logging", {})
+    log_file = f"{log_cfg.get('dir', './data')}/distiller.log"
     if suppress_stdout:
-        _silence_stdio()
+        _silence_stdio(log_file)
     from alfred.distiller.config import load_from_unified
     from alfred.distiller.utils import setup_logging
     config = load_from_unified(raw)
-    log_cfg = raw.get("logging", {})
-    setup_logging(level=log_cfg.get("level", "INFO"), log_file=f"{log_cfg.get('dir', './data')}/distiller.log", suppress_stdout=suppress_stdout)
+    setup_logging(level=log_cfg.get("level", "INFO"), log_file=log_file, suppress_stdout=suppress_stdout)
     from alfred.distiller.state import DistillerState
     from alfred.distiller.daemon import run_watch
     state = DistillerState(config.state.path, config.state.max_run_history)
@@ -69,8 +78,9 @@ _MISSING_DEPS_EXIT = 78  # exit code signaling missing optional dependencies
 
 def _run_surveyor(raw: dict[str, Any], suppress_stdout: bool = False) -> None:
     """Surveyor daemon process entry point."""
+    log_cfg = raw.get("logging", {})
     if suppress_stdout:
-        _silence_stdio()
+        _silence_stdio(f"{log_cfg.get('dir', './data')}/surveyor.log")
     try:
         from alfred.surveyor.config import load_from_unified
         from alfred.surveyor.utils import setup_logging
@@ -79,7 +89,6 @@ def _run_surveyor(raw: dict[str, Any], suppress_stdout: bool = False) -> None:
         sys.exit(_MISSING_DEPS_EXIT)
 
     config = load_from_unified(raw)
-    log_cfg = raw.get("logging", {})
     setup_logging(level=log_cfg.get("level", "INFO"), log_file=f"{log_cfg.get('dir', './data')}/surveyor.log", suppress_stdout=suppress_stdout)
     daemon = Daemon(config)
     asyncio.run(daemon.run())

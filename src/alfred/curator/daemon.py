@@ -225,7 +225,10 @@ async def run(config: CuratorConfig, skills_dir: Path) -> None:
         state_processed=set(state_mgr.state.processed.keys()),
     )
     for inbox_file in unprocessed:
-        await _process_file(inbox_file, backend, skill_text, config, state_mgr)
+        try:
+            await _process_file(inbox_file, backend, skill_text, config, state_mgr)
+        except Exception:
+            log.exception("daemon.process_error", file=inbox_file.name)
 
     # Start watching
     watcher.start()
@@ -241,7 +244,10 @@ async def run(config: CuratorConfig, skills_dir: Path) -> None:
                     continue
                 if not inbox_file.exists():
                     continue
-                await _process_file(inbox_file, backend, skill_text, config, state_mgr)
+                try:
+                    await _process_file(inbox_file, backend, skill_text, config, state_mgr)
+                except Exception:
+                    log.exception("daemon.process_error", file=inbox_file.name)
     finally:
         watcher.stop()
         log.info("daemon.stopped")

@@ -354,13 +354,16 @@ async def run_watch(
         now = datetime.now(timezone.utc)
         hours_since_deep = (now - last_deep).total_seconds() / 3600
 
-        if hours_since_deep >= deep_interval_hours:
-            # Deep sweep with agent
-            log.info("daemon.deep_sweep")
-            await run_sweep(config, state, skills_dir, structural_only=False, fix_mode=True)
-            last_deep = now
-        else:
-            # Structural-only sweep
-            await run_sweep(config, state, skills_dir, structural_only=True, fix_mode=False)
+        try:
+            if hours_since_deep >= deep_interval_hours:
+                # Deep sweep with agent
+                log.info("daemon.deep_sweep")
+                await run_sweep(config, state, skills_dir, structural_only=False, fix_mode=True)
+                last_deep = now
+            else:
+                # Structural-only sweep
+                await run_sweep(config, state, skills_dir, structural_only=True, fix_mode=False)
+        except Exception:
+            log.exception("daemon.sweep_error")
 
         await asyncio.sleep(interval)
