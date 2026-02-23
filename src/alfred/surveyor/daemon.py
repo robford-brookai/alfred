@@ -39,9 +39,10 @@ class Daemon:
         self._shutdown_requested = True
 
     async def shutdown(self) -> None:
-        """Graceful shutdown: stop watcher, save state."""
+        """Graceful shutdown: stop watcher, close HTTP clients, save state."""
         log.info("daemon.shutting_down")
         self.watcher.stop()
+        await self.embedder.close()
         self.state.save()
         log.info("daemon.shutdown_complete")
 

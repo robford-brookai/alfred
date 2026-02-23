@@ -17,8 +17,10 @@ from .state import PipelineState
 log = structlog.get_logger()
 
 # Retry config
-MAX_RETRIES = 3
+MAX_RETRIES = 5
 RETRY_BASE_DELAY = 2.0
+# Throttle between sequential embedding requests (seconds)
+EMBED_THROTTLE = 0.2
 
 
 class Embedder:
@@ -40,6 +42,9 @@ class Embedder:
         self.embedding_dims = ollama_cfg.embedding_dims
         self.vault_path = vault_path
         self.state = state
+
+        # Persistent HTTP client for embedding calls (connection pooling)
+        self._http: httpx.AsyncClient | None = None
 
         # Milvus Lite client — retry on lock contention from prior process
         self.collection_name = milvus_cfg.collection_name
@@ -88,6 +93,17 @@ class Embedder:
         )
         log.info("embedder.collection_created", name=self.collection_name)
 
+    async def _ensure_http(self) -> httpx.AsyncClient:
+        """Lazily create and reuse a persistent HTTP client."""
+        if self._http is None or self._http.is_closed:
+            self._http = httpx.AsyncClient(timeout=60.0)
+        return self._http
+
+    async def close(self) -> None:
+        """Clean up the persistent HTTP client."""
+        if self._http is not None and not self._http.is_closed:
+            await self._http.aclose()
+
     async def _get_embedding(self, text: str) -> list[float] | None:
         """Call embedding API with retry. Supports Ollama and OpenAI-compatible endpoints."""
         headers = {}
@@ -97,19 +113,19 @@ class Embedder:
         else:
             body = {"model": self.model, "prompt": text}
 
+        client = await self._ensure_http()
         for attempt in range(MAX_RETRIES):
             try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    resp = await client.post(
-                        self.embed_url,
-                        json=body,
-                        headers=headers,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    if self.api_key:
-                        return data["data"][0]["embedding"]
-                    return data["embedding"]
+                resp = await client.post(
+                    self.embed_url,
+                    json=body,
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if self.api_key:
+                    return data["data"][0]["embedding"]
+                return data["embedding"]
             except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as e:
                 delay = RETRY_BASE_DELAY * (2 ** attempt)
                 log.warning("embedder.embed_retry", attempt=attempt + 1, error=str(e), delay=delay)
@@ -140,6 +156,9 @@ class Embedder:
             embedding = await self._get_embedding(text)
             if embedding is None:
                 continue
+
+            # Throttle between requests to reduce Ollama pressure
+            await asyncio.sleep(EMBED_THROTTLE)
 
             # Upsert to Milvus
             self.milvus.upsert(

@@ -157,8 +157,10 @@ def run_all(
             print(f"  [{tool}] started (pid {p.pid})")
         return p
 
-    # Start all
-    for tool in tools:
+    # Start all — stagger by 10s to avoid thundering herd on shared infra
+    for i, tool in enumerate(tools):
+        if i > 0:
+            time.sleep(10)
         processes[tool] = start_process(tool)
         restart_counts[tool] = 0
 
