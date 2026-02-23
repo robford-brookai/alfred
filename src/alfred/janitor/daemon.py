@@ -1,4 +1,12 @@
-"""Sweep orchestrator — two-phase scan + fix pipeline."""
+"""Sweep orchestrator — two-phase scan + fix pipeline.
+
+For OpenClaw backends, uses a 3-stage pipeline (pipeline.py) for better quality:
+  Stage 1: AUTOFIX (pure Python) — deterministic fixes
+  Stage 2: LINK REPAIR (LLM per-file) — broken wikilinks
+  Stage 3: ENRICH (LLM per-file) — stub records
+
+For other backends, falls back to the legacy single-LLM-call approach.
+"""
 
 from __future__ import annotations
 
@@ -18,11 +26,17 @@ from .config import JanitorConfig
 from .context import build_vault_context
 from .issues import FixLogEntry, Issue, SweepResult, Severity
 from .parser import parse_file
+from .pipeline import run_pipeline
 from .scanner import run_structural_scan
 from .state import JanitorState
 from .utils import file_hash, get_logger
 
 log = get_logger(__name__)
+
+
+def _use_pipeline(config: JanitorConfig) -> bool:
+    """Check if the 3-stage pipeline should be used (OpenClaw backend only)."""
+    return config.agent.backend == "openclaw"
 
 
 def _load_skill(skills_dir: Path) -> str:
@@ -153,101 +167,156 @@ async def run_sweep(
         state.save()
         return result
 
-    # Phase 2: Agent fix (only if fix_mode and not structural_only)
+    # Phase 2: Fix (only if fix_mode and not structural_only)
     if fix_mode and not structural_only:
-        skill_text = _load_skill(skills_dir)
-        if not skill_text:
-            log.warning("sweep.no_skill", msg="No SKILL.md found — skipping agent fix")
-        else:
-            backend = _create_backend(config)
-            vault_path = config.vault.vault_path
-            use_mutation_log = isinstance(backend, (ClaudeBackend, OpenClawBackend))
+        if _use_pipeline(config):
+            # 3-stage pipeline for OpenClaw backend
+            session_path = create_session_file()
 
-            # Batch issues if too many
-            max_per_call = config.sweep.max_files_per_agent_call
-            affected_files = list({i.file for i in issues})
+            pipeline_result = await run_pipeline(
+                issues=issues,
+                config=config,
+                session_path=session_path,
+            )
 
-            for batch_start in range(0, len(affected_files), max_per_call):
-                batch_files = set(affected_files[batch_start:batch_start + max_per_call])
-                batch_issues = [i for i in issues if i.file in batch_files]
+            mutations = read_mutations(session_path)
+            created = mutations["files_created"]
+            modified = mutations["files_modified"]
+            deleted = mutations["files_deleted"]
+            cleanup_session_file(session_path)
 
-                issue_report = build_issue_report(batch_issues)
-                affected_records = _build_affected_records(batch_issues, vault_path)
+            # Audit log
+            audit_mutations = {"files_created": created, "files_modified": modified, "files_deleted": deleted}
+            audit_path = str(Path(config.state.path).parent / "vault_audit.log")
+            append_to_audit_log(audit_path, "janitor", audit_mutations, detail=sweep_id)
 
-                session_path = None
-                if use_mutation_log:
-                    session_path = create_session_file()
-                    backend.env_overrides = {
-                        "ALFRED_VAULT_PATH": str(vault_path),
-                        "ALFRED_VAULT_SCOPE": "janitor",
-                        "ALFRED_VAULT_SESSION": session_path,
-                    }
-                else:
-                    before = snapshot_vault(vault_path, config.vault.ignore_dirs)
+            result.files_fixed += len(modified) + len(created)
+            result.files_deleted += len(deleted)
+            result.agent_invoked = True
 
-                # Invoke agent
-                log.info(
-                    "sweep.agent_invoke",
+            for f in modified:
+                state.add_fix_log(FixLogEntry(
                     sweep_id=sweep_id,
-                    batch_files=len(batch_files),
-                    batch_issues=len(batch_issues),
+                    action="fixed",
+                    file=f,
+                    detail=f"Pipeline: {pipeline_result.summary[:200]}",
+                ))
+            for f in created:
+                state.add_fix_log(FixLogEntry(
+                    sweep_id=sweep_id,
+                    action="fixed",
+                    file=f,
+                    detail="Created by pipeline",
+                ))
+            for f in deleted:
+                state.add_fix_log(FixLogEntry(
+                    sweep_id=sweep_id,
+                    action="deleted",
+                    file=f,
+                    detail="Deleted by pipeline",
+                ))
+
+            if not pipeline_result.success:
+                log.error(
+                    "sweep.pipeline_failed",
+                    sweep_id=sweep_id,
+                    summary=pipeline_result.summary[:500],
                 )
-                agent_result = await backend.process(
-                    skill_text=skill_text,
-                    issue_report=issue_report,
-                    affected_records=affected_records,
-                    vault_path=str(vault_path),
-                )
+        else:
+            # Legacy path for Claude and Zo backends
+            skill_text = _load_skill(skills_dir)
+            if not skill_text:
+                log.warning("sweep.no_skill", msg="No SKILL.md found — skipping agent fix")
+            else:
+                backend = _create_backend(config)
+                vault_path = config.vault.vault_path
+                use_mutation_log = isinstance(backend, (ClaudeBackend, OpenClawBackend))
 
-                # Determine what changed
-                if use_mutation_log and session_path:
-                    mutations = read_mutations(session_path)
-                    created = mutations["files_created"]
-                    modified = mutations["files_modified"]
-                    deleted = mutations["files_deleted"]
-                    cleanup_session_file(session_path)
-                else:
-                    after = snapshot_vault(vault_path, config.vault.ignore_dirs)
-                    created, modified, deleted = diff_vault(before, after)
+                # Batch issues if too many
+                max_per_call = config.sweep.max_files_per_agent_call
+                affected_files = list({i.file for i in issues})
 
-                # Audit log
-                audit_mutations = {"files_created": created, "files_modified": modified, "files_deleted": deleted}
-                audit_path = str(Path(config.state.path).parent / "vault_audit.log")
-                append_to_audit_log(audit_path, "janitor", audit_mutations, detail=sweep_id)
+                for batch_start in range(0, len(affected_files), max_per_call):
+                    batch_files = set(affected_files[batch_start:batch_start + max_per_call])
+                    batch_issues = [i for i in issues if i.file in batch_files]
 
-                result.files_fixed += len(modified) + len(created)
-                result.files_deleted += len(deleted)
-                result.agent_invoked = True
+                    issue_report = build_issue_report(batch_issues)
+                    affected_records = _build_affected_records(batch_issues, vault_path)
 
-                # Log actions
-                for f in modified:
-                    state.add_fix_log(FixLogEntry(
+                    session_path = None
+                    if use_mutation_log:
+                        session_path = create_session_file()
+                        backend.env_overrides = {
+                            "ALFRED_VAULT_PATH": str(vault_path),
+                            "ALFRED_VAULT_SCOPE": "janitor",
+                            "ALFRED_VAULT_SESSION": session_path,
+                        }
+                    else:
+                        before = snapshot_vault(vault_path, config.vault.ignore_dirs)
+
+                    # Invoke agent
+                    log.info(
+                        "sweep.agent_invoke",
                         sweep_id=sweep_id,
-                        action="fixed",
-                        file=f,
-                        detail="Modified by agent",
-                    ))
-                for f in deleted:
-                    state.add_fix_log(FixLogEntry(
-                        sweep_id=sweep_id,
-                        action="deleted",
-                        file=f,
-                        detail="Deleted by agent",
-                    ))
-                for f in created:
-                    state.add_fix_log(FixLogEntry(
-                        sweep_id=sweep_id,
-                        action="fixed",
-                        file=f,
-                        detail="Created by agent",
-                    ))
-
-                if not agent_result.success:
-                    log.error(
-                        "sweep.agent_failed",
-                        sweep_id=sweep_id,
-                        summary=agent_result.summary[:500],
+                        batch_files=len(batch_files),
+                        batch_issues=len(batch_issues),
                     )
+                    agent_result = await backend.process(
+                        skill_text=skill_text,
+                        issue_report=issue_report,
+                        affected_records=affected_records,
+                        vault_path=str(vault_path),
+                    )
+
+                    # Determine what changed
+                    if use_mutation_log and session_path:
+                        mutations = read_mutations(session_path)
+                        created = mutations["files_created"]
+                        modified = mutations["files_modified"]
+                        deleted = mutations["files_deleted"]
+                        cleanup_session_file(session_path)
+                    else:
+                        after = snapshot_vault(vault_path, config.vault.ignore_dirs)
+                        created, modified, deleted = diff_vault(before, after)
+
+                    # Audit log
+                    audit_mutations = {"files_created": created, "files_modified": modified, "files_deleted": deleted}
+                    audit_path = str(Path(config.state.path).parent / "vault_audit.log")
+                    append_to_audit_log(audit_path, "janitor", audit_mutations, detail=sweep_id)
+
+                    result.files_fixed += len(modified) + len(created)
+                    result.files_deleted += len(deleted)
+                    result.agent_invoked = True
+
+                    # Log actions
+                    for f in modified:
+                        state.add_fix_log(FixLogEntry(
+                            sweep_id=sweep_id,
+                            action="fixed",
+                            file=f,
+                            detail="Modified by agent",
+                        ))
+                    for f in deleted:
+                        state.add_fix_log(FixLogEntry(
+                            sweep_id=sweep_id,
+                            action="deleted",
+                            file=f,
+                            detail="Deleted by agent",
+                        ))
+                    for f in created:
+                        state.add_fix_log(FixLogEntry(
+                            sweep_id=sweep_id,
+                            action="fixed",
+                            file=f,
+                            detail="Created by agent",
+                        ))
+
+                    if not agent_result.success:
+                        log.error(
+                            "sweep.agent_failed",
+                            sweep_id=sweep_id,
+                            summary=agent_result.summary[:500],
+                        )
 
     log.info(
         "sweep.complete",
