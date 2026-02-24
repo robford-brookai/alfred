@@ -387,6 +387,57 @@ def cmd_process(args: argparse.Namespace) -> None:
         pass
 
 
+def cmd_tui(args: argparse.Namespace) -> None:
+    """Launch the Ink TUI dashboard (reads data/ files produced by daemons)."""
+    import shutil
+    import subprocess
+
+    raw = _load_unified_config(args.config)
+    log_cfg = raw.get("logging", {})
+    log_dir = Path(log_cfg.get("dir", "./data")).resolve()
+
+    # Check if daemons are running (warn only)
+    pid_path = log_dir / "alfred.pid"
+    from alfred.daemon import check_already_running
+    if not check_already_running(pid_path):
+        print("Note: Alfred daemons are not running. The TUI will show last-known state.")
+        print("Start daemons with: alfred up\n")
+
+    # Locate bundled JS
+    from alfred._data import get_tui_js_path
+    js_path = get_tui_js_path()
+    if not js_path.exists():
+        print(f"TUI bundle not found at {js_path}")
+        print("Rebuild with: cd tui-ink && npm run build")
+        sys.exit(1)
+
+    # Check node is available
+    node = shutil.which("node")
+    if not node:
+        print("Node.js is required for the Ink TUI but was not found on PATH.")
+        print("Install Node.js 18+ from https://nodejs.org/")
+        sys.exit(1)
+
+    # Get version
+    version = "0.2.1"
+    try:
+        from importlib.metadata import version as pkg_version
+        version = pkg_version("alfred-vault")
+    except Exception:
+        pass
+
+    env = {
+        **os.environ,
+        "ALFRED_DATA_DIR": str(log_dir),
+        "ALFRED_VERSION": version,
+    }
+
+    try:
+        subprocess.run([node, str(js_path)], env=env)
+    except KeyboardInterrupt:
+        pass
+
+
 def cmd_surveyor(args: argparse.Namespace) -> None:
     raw = _load_unified_config(args.config)
     _setup_logging_from_config(raw)
@@ -531,6 +582,9 @@ def build_parser() -> argparse.ArgumentParser:
     # surveyor
     sub.add_parser("surveyor", help="Start surveyor pipeline")
 
+    # tui
+    sub.add_parser("tui", help="Launch interactive Ink TUI dashboard (requires Node.js)")
+
     return parser
 
 
@@ -557,6 +611,7 @@ def main() -> None:
         "ingest": cmd_ingest,
         "process": cmd_process,
         "surveyor": cmd_surveyor,
+        "tui": cmd_tui,
     }
 
     handler = handlers.get(args.command)

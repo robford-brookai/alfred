@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import multiprocessing
 import os
 import signal
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -168,6 +170,37 @@ def run_all(
     sentinel_path = pid_path.parent / "alfred.stop" if pid_path else None
 
     log_dir = Path(raw.get("logging", {}).get("dir", "./data"))
+    workers_json_path = log_dir / "workers.json"
+    started_at = datetime.now(timezone.utc).isoformat()
+
+    def _write_workers_json() -> None:
+        """Write current process status to workers.json for the Ink TUI."""
+        data = {
+            "pid": os.getpid(),
+            "started_at": started_at,
+            "tools": {},
+        }
+        for tool in tools:
+            p = processes.get(tool)
+            if p is None:
+                data["tools"][tool] = {"pid": None, "status": "stopped", "restarts": restart_counts.get(tool, 0)}
+                continue
+            alive = p.is_alive()
+            data["tools"][tool] = {
+                "pid": p.pid if alive else None,
+                "status": "running" if alive else "stopped",
+                "restarts": restart_counts.get(tool, 0),
+            }
+            if not alive and p.exitcode is not None:
+                data["tools"][tool]["exit_code"] = p.exitcode
+        try:
+            workers_json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+    # Write initial workers.json
+    _write_workers_json()
+    last_workers_write = time.monotonic()
 
     if live_mode:
         # Live TUI dashboard mode — prefer Textual, fall back to Rich Live
@@ -198,6 +231,12 @@ def run_all(
         try:
             while True:
                 time.sleep(5)
+
+                # Periodically write workers.json for the Ink TUI
+                now = time.monotonic()
+                if now - last_workers_write >= 2:
+                    _write_workers_json()
+                    last_workers_write = now
 
                 # Check for shutdown sentinel
                 if sentinel_path and sentinel_path.exists():
@@ -240,3 +279,7 @@ def run_all(
             sentinel_path.unlink(missing_ok=True)
         except OSError:
             pass
+    try:
+        workers_json_path.unlink(missing_ok=True)
+    except OSError:
+        pass

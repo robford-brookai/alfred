@@ -24,6 +24,10 @@ config.yaml
 .vscode/
 .idea/
 
+# Ink TUI
+tui-ink/node_modules/
+tui-ink/dist/
+
 # OS
 .DS_Store
 Thumbs.db

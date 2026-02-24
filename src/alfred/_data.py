@@ -28,3 +28,7 @@ def get_example_config() -> Path:
 
 def get_example_env() -> Path:
     return get_bundled_dir() / ".env.example"
+
+
+def get_tui_js_path() -> Path:
+    return get_bundled_dir() / "tui_js" / "index.js"
