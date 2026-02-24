@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "alfred-vault"
-version = "0.2.2"
-description = "AI-powered background services for Obsidian vault maintenance"
+version = "0.3.0"
+description = "Personal agentic infrastructure. Self-hosted. Always on."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -28,7 +28,8 @@ surveyor = [
     "numpy>=1.26",
     "openai>=1.30",
 ]
-all = ["alfred-vault[surveyor]"]
+temporal = ["temporalio>=1.9.0"]
+all = ["alfred-vault[surveyor]", "alfred-vault[temporal]"]
 
 [project.urls]
 Homepage = "https://github.com/ssdavidai/alfred"

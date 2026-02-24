@@ -84,6 +84,22 @@ The curator also runs as part of `alfred up`. For standalone use, it watches the
 
 The surveyor runs its 4-stage pipeline once and exits. As part of `alfred up`, it runs as a daemon with configurable intervals.
 
+## Temporal (Kinetic Layer)
+
+Requires `pip install alfred-vault[temporal]` and a running Temporal server.
+
+| Command | Description |
+|---------|-------------|
+| `alfred temporal worker` | Start the workflow worker (connects to Temporal, runs workflows) |
+| `alfred temporal run <workflow>` | Trigger a one-off workflow execution |
+| `alfred temporal run <workflow> --params '{"key": "value"}'` | Trigger with JSON parameters |
+| `alfred temporal run <workflow> --id my-run-id` | Trigger with a custom workflow ID |
+| `alfred temporal schedule register <file>` | Register cron schedules from a Python file |
+| `alfred temporal schedule list` | List registered schedules |
+| `alfred temporal list` | List discovered workflow definitions |
+
+The worker discovers workflows from directories configured in `temporal.workflow_dirs` plus bundled examples. See [Kinetic Layer](Kinetic-Layer) for details on writing workflows and schedules.
+
 ## Vault Operations
 
 Direct CRUD operations on vault records:

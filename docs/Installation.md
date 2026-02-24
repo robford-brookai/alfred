@@ -12,19 +12,22 @@
 # Base install (curator + janitor + distiller)
 pip install alfred-vault
 
-# Full install (adds surveyor with ML/vector dependencies)
+# With surveyor (adds ML/vector dependencies)
 pip install "alfred-vault[all]"
+
+# With Temporal (kinetic layer — durable workflow engine)
+pip install "alfred-vault[temporal]"
 ```
 
-The base install includes the curator, janitor, and distiller. The `[all]` extra adds the surveyor, which requires numpy, scikit-learn, hdbscan, igraph, leidenalg, pymilvus, and an embedding provider.
+The base install includes the semantic layer workers (curator, janitor, distiller). The `[all]` extra adds the surveyor (ML/vector deps) and Temporal (workflow engine).
 
 ## Install from Source
 
 ```bash
 git clone https://github.com/ssdavidai/alfred.git
 cd alfred
-pip install -e .          # base
-pip install -e ".[all]"   # full (with surveyor)
+pip install -e .          # base (semantic layer workers)
+pip install -e ".[all]"   # full (surveyor + temporal)
 ```
 
 ## Setup
@@ -62,6 +65,37 @@ Edit both files. See [Configuration](Configuration) for all options.
 alfred status          # check what's configured
 alfred up --live       # start with dashboard to see everything working
 ```
+
+## Temporal Setup (Kinetic Layer)
+
+The Temporal workflow engine requires a running Temporal server:
+
+1. **Install Temporal CLI**:
+   ```bash
+   # See: https://docs.temporal.io/cli#install
+   brew install temporal  # macOS
+   ```
+
+2. **Start the dev server**:
+   ```bash
+   temporal server start-dev
+   ```
+
+3. **Add config** (optional — defaults work for local dev):
+   ```yaml
+   # config.yaml
+   temporal:
+     address: "127.0.0.1:7233"
+     task_queue: "alfred-workflows"
+     workflow_dirs: ["./workflows"]
+   ```
+
+4. **Start the worker**:
+   ```bash
+   alfred temporal worker
+   ```
+
+See [Kinetic Layer](Kinetic-Layer) for workflow authoring and schedule management.
 
 ## Surveyor-Specific Setup
 

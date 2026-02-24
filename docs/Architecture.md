@@ -1,193 +1,187 @@
 # Architecture
 
-## Source Layout
+Alfred is a layered agentic architecture. Each layer has a distinct responsibility and can be understood, configured, and extended independently.
 
 ```
-src/alfred/
-  cli.py               # Top-level argparse CLI dispatcher
-  daemon.py             # Background process spawn/stop (re-exec pattern)
-  orchestrator.py       # Multiprocess daemon manager with auto-restart
-  dashboard.py          # Rich TUI live dashboard (2x2 worker feed grid)
-  quickstart.py         # Interactive setup wizard
-  _data.py              # Bundled resource locator (importlib.resources)
-
-  curator/              # Inbox processor
-    config.py           # Typed dataclass config
-    daemon.py           # Async watcher/daemon entry point
-    pipeline.py         # 4-stage processing pipeline
-    state.py            # JSON-based state persistence
-    context.py          # Vault context builder
-    watcher.py          # Filesystem watcher for inbox
-    backends/           # Agent interface implementations
-      __init__.py       # BaseBackend ABC, build_prompt()
-      cli.py            # Claude Code backend
-      http.py           # Zo Computer backend
-      openclaw.py       # OpenClaw backend
-
-  janitor/              # Vault quality scanner + fixer
-    config.py
-    daemon.py
-    pipeline.py         # 3-stage fix pipeline
-    scanner.py          # Issue detection engine
-    autofix.py          # Deterministic fix logic
-    state.py
-    context.py
-    backends/
-
-  distiller/            # Knowledge extractor
-    config.py
-    daemon.py
-    pipeline.py         # 2-pass extraction pipeline
-    candidates.py       # Candidate scoring engine
-    state.py
-    context.py
-    backends/
-
-  surveyor/             # Semantic embedder + clusterer
-    config.py
-    daemon.py           # Async daemon with 4-stage pipeline
-    embedder.py         # Vector embedding (Ollama/OpenAI)
-    clusterer.py        # HDBSCAN + Leiden clustering
-    labeler.py          # LLM cluster labeling (OpenRouter)
-    writer.py           # Tag/relationship writer
-    parser.py           # Vault record parser for surveyor
-    watcher.py          # Vault file watcher
-    state.py
-
-  vault/                # Vault operations layer
-    ops.py              # CRUD operations (create, read, edit, search, move, delete)
-    schema.py           # KNOWN_TYPES, STATUS_BY_TYPE, TYPE_DIRECTORY, etc.
-    scope.py            # Per-tool operation restrictions
-    mutation_log.py     # Session-scoped JSONL mutation tracking
-    obsidian.py         # Optional Obsidian CLI integration
-    cli.py              # alfred vault subcommands
-
-  tui/                  # Textual TUI (Python, for alfred up --live)
-    app.py              # Main Textual application
-    data.py             # Shared data types and constants
-    screens/            # Dashboard, logs, mutations, status screens
-    widgets/            # Worker cards, stat cards, health badges
-
-  _bundled/             # Data files shipped in the wheel
-    skills/
-      vault-curator/    # Curator skill prompts
-        SKILL.md        # Main skill prompt (legacy single-call)
-        prompts/        # Stage-specific prompts
-        references/     # Per-type reference schemas
-      vault-janitor/    # Janitor skill prompts
-      vault-distiller/  # Distiller skill prompts
-    scaffold/           # Vault scaffolding
-      _templates/       # Per-type Markdown templates
-      _bases/           # Dataview base view definitions
-      user-profile.md   # User profile template
-    tui_js/             # Bundled Ink TUI (built from tui-ink/)
-      index.js          # Single-file esbuild bundle
-
-tui-ink/                # Ink TUI source (React + TypeScript)
-  src/
-    index.tsx           # Entry point
-    app.tsx             # Root component, screen state machine
-    store.ts            # React context store
-    data/               # Types, parsers, interpreters, constants
-    hooks/              # File tailers, state pollers, time series
-    components/         # Header, Footer, WorkerLine, FeedLine, etc.
-  build.mjs             # esbuild config (outputs to _bundled/tui_js/)
+ Interface     Where you interact (Telegram, Slack, CLI, TUI, ...)
+     |
+   Agent        The AI that reasons (Claude Code, Zo, OpenClaw)
+     |
+  Kinetic       The engine that executes (Temporal workflows)
+     |
+ Semantic       The memory that persists (Obsidian vault + workers)
+     |
+   Data          The pipelines that capture (Omi, meetings, email, ...)
+     |
+   Infra         Where it all runs (Mac Mini, VPS, personal cloud)
 ```
+
+## Layer Overview
+
+### Infra Layer
+
+Alfred runs anywhere you trust your data. There is no cloud dependency — everything is self-hosted by default.
+
+- **Mac Mini / local machine** — simplest setup, good for personal use
+- **VPS** — Hetzner, DigitalOcean, AWS, Linode — for always-on availability
+- **Personal cloud** — Zo Computer — managed hosting with agent runtime included
+
+### Data Layer
+
+Pipelines that capture raw signal and feed it into the Semantic Layer's inbox for processing:
+
+- **Omi wearable** — ambient conversation transcripts, processed into vault records automatically
+- **Meeting integrations** — Zoom, Sembly AI, other transcript sources
+- **Email digests** — forwarded or piped into inbox
+- **Bulk imports** — `alfred ingest` splits ChatGPT/Anthropic conversation exports into individual inbox files
+- **API webhooks** — anything that can write a file to `inbox/`
+
+The Data Layer is extensible — any source that can produce a text file can feed Alfred.
+
+### Semantic Layer
+
+The Obsidian vault is a living knowledge graph — human-readable, agent-writable, wikilinked, and versioned. It serves as both the agent's operational memory and the human's second brain.
+
+Four specialized workers maintain the vault continuously:
+
+| Worker | Scope | Function |
+|--------|-------|----------|
+| **[Curator](Curator)** | Create, Edit | Processes inbox files into structured, interlinked records |
+| **[Janitor](Janitor)** | Edit, Delete | Detects and repairs structural issues (broken links, orphans, invalid frontmatter) |
+| **[Distiller](Distiller)** | Create (learning types) | Extracts latent knowledge: assumptions, decisions, constraints, contradictions |
+| **[Surveyor](Surveyor)** | Tag, Link | Embeds, clusters, labels, and writes semantic relationship tags |
+
+Each worker has **scope enforcement** — the Curator can create and edit but not delete; the Janitor can edit and delete but not create; the Distiller can only create learning-type records. This prevents any single worker from having unconstrained write access.
+
+20 record types across three categories:
+- **Operational**: project, task, session, conversation, input, note, process, run, event, thread
+- **Entity**: person, org, location, account, asset
+- **Epistemic**: assumption, decision, constraint, contradiction, synthesis
+
+See [Vault Schema](Vault-Schema) and [Semantic Layer](Semantic-Layer) for details.
+
+### Kinetic Layer
+
+A Temporal-based execution engine that orchestrates agent work as durable workflows. Workflows survive crashes, can sleep for days, and resume with full state.
+
+Key components:
+- **Activities** — `spawn_agent`, `run_script`, `notify_slack`, `ping_uptime`, `check_day_of_week`, `load_json_state`, `save_json_state`
+- **Discovery** — scans configured directories for `@workflow.defn` classes
+- **Schedules** — register cron-based schedules from Python definition files
+- **Worker** — connects to Temporal server, runs workflows + activities with health watchdog
+
+The core principle: **Python handles control flow, the agent handles reasoning.** A workflow loops through emails, but for each email it calls `spawn_agent` with a single atomic prompt. The agent never orchestrates — it only executes.
+
+See [Kinetic Layer](Kinetic-Layer) for details.
+
+### Agent Layer
+
+Three pluggable backends that implement the same interface (`process(prompt, vault_path) -> result`):
+
+| Backend | Type | Best for |
+|---------|------|----------|
+| **Claude Code** | Subprocess (`claude -p`) | Default, works out of the box |
+| **Zo Computer** | HTTP API | Cloud-based, managed |
+| **OpenClaw** | Subprocess (`openclaw agent`) | Multi-stage pipelines, multi-channel interface |
+
+The Kinetic Layer supports per-workflow agent profiles — different workflows can use different backends, skills, and scopes.
+
+See [Agent Backends](Agent-Backends) for setup details.
+
+### Interface Layer
+
+The interface is typically provided by your agent runtime, not by Alfred directly:
+
+| Runtime | Channels |
+|---------|----------|
+| **OpenClaw** | Telegram, WhatsApp, Slack, iMessage, Discord, Signal |
+| **Zo Computer** | Telegram, SMS, email |
+| **Local** | CLI (`alfred`), TUI dashboard (`alfred tui`), Claude Code |
+
+Alfred's CLI and TUI serve as the local interface for configuration, monitoring, and direct commands.
+
+---
 
 ## Design Patterns
 
 ### Agent-Writes-Directly
 
-Curator, janitor, and distiller delegate work to an AI agent backend. The agent receives a skill prompt plus vault context, then reads/writes vault files via the `alfred vault` CLI. The tool's job is orchestration: detecting changes, invoking the agent, reading the mutation log, and updating state.
+Semantic layer workers delegate work to an AI agent backend. The agent receives a skill prompt plus vault context, then reads/writes vault files via the `alfred vault` CLI. The worker's job is orchestration: detecting changes, invoking the agent, reading the mutation log, and updating state.
 
 Each agent invocation gets environment variables injected:
 - `ALFRED_VAULT_PATH` — path to the vault
-- `ALFRED_VAULT_SCOPE` — tool scope (restricts operations)
+- `ALFRED_VAULT_SCOPE` — worker scope (restricts operations)
 - `ALFRED_VAULT_SESSION` — mutation log session file
-
-### Scope Enforcement
-
-Each tool has a scope that restricts which vault operations the agent can perform:
-
-| Tool | Create | Edit | Delete |
-|------|--------|------|--------|
-| Curator | Yes | Yes | No |
-| Janitor | No | Yes | Yes |
-| Distiller | Yes (learning types only) | No | No |
-
-Defined in `vault/scope.py` with `SCOPE_RULES` dict.
-
-### Pluggable Backends
-
-Three backend implementations in each tool's `backends/`:
-
-| Backend | Implementation | When to use |
-|---------|---------------|-------------|
-| Claude Code | Subprocess via `claude -p` | Default, requires Claude Code CLI |
-| Zo Computer | HTTP API | Cloud-based, requires API key |
-| OpenClaw | Subprocess via `openclaw agent` | Required for multi-stage pipelines |
 
 ### Pipeline vs Legacy Mode
 
-The multi-stage pipelines (curator 4-stage, janitor 3-stage, distiller 2-pass) currently only work with the OpenClaw backend. Claude Code and Zo backends fall back to a legacy single-call mode where one agent call handles everything.
+The multi-stage pipelines (Curator 4-stage, Janitor 3-stage, Distiller 2-pass) currently only work with the OpenClaw backend. Claude Code and Zo backends fall back to a legacy single-call mode where one agent call handles everything.
 
 ### Config Loading
 
-Each tool has its own `config.py` with typed dataclasses. All follow the same pattern:
+Each component has its own `config.py` with typed dataclasses. All follow the same pattern:
 1. `load_from_unified(raw: dict)` takes the pre-loaded unified config
 2. `_substitute_env()` replaces `${VAR}` placeholders
 3. `_build()` recursively constructs dataclasses
 4. Config loaded lazily in CLI handlers (not at import time)
 
+---
+
+## Source Layout
+
+```
+src/alfred/
+  cli.py               # Top-level argparse CLI dispatcher
+  daemon.py            # Background process spawn/stop (re-exec pattern)
+  orchestrator.py      # Multiprocess daemon manager with auto-restart
+  quickstart.py        # Interactive setup wizard
+  _data.py             # Bundled resource locator (importlib.resources)
+
+  curator/             # Semantic layer — inbox processor
+  janitor/             # Semantic layer — vault quality
+  distiller/           # Semantic layer — knowledge extraction
+  surveyor/            # Semantic layer — semantic mapping
+
+  temporal/            # Kinetic layer — workflow execution engine
+    config.py          # TemporalConfig, AgentProfile, TemporalRuntime
+    activities.py      # AlfredActivities (spawn_agent, run_script, etc.)
+    worker.py          # Worker startup, health watchdog
+    discovery.py       # Scan directories for @workflow.defn classes
+    schedules.py       # Schedule registration/listing
+    cli.py             # CLI handlers for alfred temporal
+
+  vault/               # Vault operations layer
+    ops.py             # CRUD operations
+    schema.py          # Record types, status values, field definitions
+    scope.py           # Per-worker operation restrictions
+    mutation_log.py    # Session-scoped JSONL mutation tracking
+    cli.py             # alfred vault subcommands
+
+  _bundled/            # Data files shipped in the wheel
+    skills/            # Per-worker skill prompts
+    scaffold/          # Vault directory scaffolding
+    examples/          # Example Temporal workflows
+    tui_js/            # Bundled Ink TUI
+```
+
 ## Execution Model
 
-### Daemon Management
+### Semantic Layer Daemons (`alfred up`)
 
-- `alfred up` uses `multiprocessing` to spawn one process per tool
+- `alfred up` uses `multiprocessing` to spawn one process per worker
 - `orchestrator.py` manages auto-restart (max 5 retries, exit code 78 = missing deps)
-- `orchestrator.py` writes `data/workers.json` every 2s with per-tool PID, status, and restart counts (consumed by the Ink TUI)
-- `alfred up` (no flag) daemonizes via re-exec pattern
-- `alfred down` uses sentinel file + SIGTERM
-- Graceful shutdown via signal handling
+- `orchestrator.py` writes `data/workers.json` every 2s (consumed by TUI)
+- Daemon mode via re-exec pattern; `alfred down` uses sentinel file + SIGTERM
 
-### Async Internals
+### Kinetic Layer Worker (`alfred temporal worker`)
 
-- Curator, janitor, distiller use `asyncio` for watcher loops and agent I/O
-- Surveyor uses `asyncio` for LLM calls (labeling) and embedding API calls
-- Each tool runs in its own process (via multiprocessing)
+- Connects to Temporal server, registers discovered workflows + built-in activities
+- Health watchdog probes server every 60s, exits after 5 consecutive failures
+- One worker process handles all workflows on the configured task queue
 
-### State Persistence
+### State & Mutation Tracking
 
-- Per-tool state files: `data/{tool}_state.json`
-- Tracks processed file hashes, sweep history, run history
-- Vault itself is source of truth — state files are just bookkeeping
-- Deleting state files forces re-processing
-
-### Mutation Tracking
-
-Every vault write operation is logged to:
-1. **Session file** — per-invocation JSONL (`/tmp/alfred-{tool}-{uuid}.jsonl`)
-2. **Audit log** — append-only JSONL (`data/vault_audit.log`)
-
-The session file lets the pipeline know what the agent did (which files were created/modified). The audit log provides a complete history of all vault mutations.
-
-## Template System
-
-Templates in `_templates/` define the default structure for each record type:
-- YAML frontmatter with all fields and defaults
-- Body with heading, description placeholder, and base-view embeds
-
-Base-view embeds (`![[project.base#Tasks]]`) render live Dataview tables in Obsidian. When records are created with custom body content, the template's base-view embeds are automatically extracted and appended to ensure every record gets its Dataview sections.
-
-## Manifest Files
-
-The curator and distiller use JSON manifest files for structured data exchange with the LLM:
-
-1. A unique temp file path is generated: `/tmp/alfred-{tool}-{uuid}-manifest.json`
-2. The path is embedded in the LLM prompt with instructions to write JSON there
-3. After the LLM call, the pipeline reads the file
-4. If the file is missing, it falls back to parsing stdout
-5. If both fail, it retries (up to 3 attempts)
-6. The temp file is cleaned up after each attempt
-
-This approach avoids the problem of parsing JSON from stdout that's polluted by agent conversation/reasoning output.
+- Per-worker state files: `data/{tool}_state.json` — tracks processed file hashes, history
+- Audit log: `data/vault_audit.log` — append-only JSONL of every vault mutation
+- Session files: per-invocation JSONL for mutation tracking
+- The vault itself is the source of truth — state files are just bookkeeping

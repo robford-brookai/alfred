@@ -438,6 +438,32 @@ def cmd_tui(args: argparse.Namespace) -> None:
         pass
 
 
+def cmd_temporal(args: argparse.Namespace) -> None:
+    raw = _load_unified_config(args.config)
+    _setup_logging_from_config(raw)
+
+    try:
+        from alfred.temporal import cli as tcli
+    except ImportError as e:
+        print(f"Temporal dependencies not installed: {e}")
+        print("Install with: pip install alfred-vault[temporal]")
+        sys.exit(1)
+
+    subcmd = getattr(args, "temporal_cmd", None)
+    if subcmd == "worker":
+        tcli.cmd_worker(args, raw)
+    elif subcmd == "run":
+        tcli.cmd_run(args, raw)
+    elif subcmd == "schedule":
+        tcli.cmd_schedule(args, raw)
+    elif subcmd == "list":
+        tcli.cmd_list(args, raw)
+    else:
+        print("Usage: alfred temporal {worker|run|schedule|list}")
+        print("Run `alfred temporal --help` for details.")
+        sys.exit(1)
+
+
 def cmd_surveyor(args: argparse.Namespace) -> None:
     raw = _load_unified_config(args.config)
     _setup_logging_from_config(raw)
@@ -579,6 +605,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of concurrent workers (default: 4)",
     )
 
+    # temporal
+    temp = sub.add_parser("temporal", help="Temporal workflow engine (requires: pip install alfred-vault[temporal])")
+    temp_sub = temp.add_subparsers(dest="temporal_cmd")
+    temp_sub.add_parser("worker", help="Start the Temporal worker")
+    temp_run = temp_sub.add_parser("run", help="Trigger a workflow")
+    temp_run.add_argument("workflow_name")
+    temp_run.add_argument("--params", default=None, help="JSON params")
+    temp_run.add_argument("--id", default=None, help="Workflow ID")
+    temp_sched = temp_sub.add_parser("schedule", help="Manage schedules")
+    temp_sched_sub = temp_sched.add_subparsers(dest="schedule_cmd")
+    temp_sched_register = temp_sched_sub.add_parser("register", help="Register from file")
+    temp_sched_register.add_argument("file")
+    temp_sched_sub.add_parser("list", help="List schedules")
+    temp_sub.add_parser("list", help="List discovered workflows")
+
     # surveyor
     sub.add_parser("surveyor", help="Start surveyor pipeline")
 
@@ -610,6 +651,7 @@ def main() -> None:
         "exec": cmd_exec,
         "ingest": cmd_ingest,
         "process": cmd_process,
+        "temporal": cmd_temporal,
         "surveyor": cmd_surveyor,
         "tui": cmd_tui,
     }

@@ -4,7 +4,13 @@
 - [Configuration](Configuration)
 - [User Profile](User-Profile)
 
-**Tools**
+**Architecture**
+- [Six-Layer Architecture](Architecture)
+- [Semantic Layer](Semantic-Layer)
+- [Kinetic Layer](Kinetic-Layer)
+- [Agent Backends](Agent-Backends)
+
+**Workers**
 - [Curator](Curator)
 - [Janitor](Janitor)
 - [Distiller](Distiller)
@@ -14,5 +20,3 @@
 - [CLI Commands](CLI-Commands)
 - [Vault Schema](Vault-Schema)
 - [Live Dashboard](Live-Dashboard)
-- [Architecture](Architecture)
-- [Agent Backends](Agent-Backends)

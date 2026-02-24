@@ -63,6 +63,18 @@ distiller:
     path: "./data/distiller_state.json"
     max_run_history: 20
 
+# temporal:
+#   address: "127.0.0.1:7233"
+#   namespace: "default"
+#   task_queue: "alfred-workflows"
+#   workflow_dirs: ["./workflows"]
+#   agents:
+#     worker:
+#       timeout: 300
+#     vault-curator:
+#       skill: vault-curator
+#       scope: curator
+
 surveyor:
   watcher:
     debounce_seconds: 30
