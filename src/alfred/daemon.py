@@ -95,6 +95,11 @@ def check_already_running(pid_path: Path) -> int | None:
     pid = read_pid(pid_path)
     if pid is None:
         return None
+    # If the PID file points to our own process, it's stale from a previous
+    # run (common in containers where PID 1 is reused across restarts).
+    if pid == os.getpid():
+        remove_pid(pid_path)
+        return None
     if is_running(pid):
         return pid
     # Stale PID file — process no longer exists.

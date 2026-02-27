@@ -257,6 +257,11 @@ def run_all(
                             processes[tool] = start_process(tool)
                         else:
                             print(f"  [{tool}] exceeded restart limit, giving up")
+                            tools = [t for t in tools if t != tool]
+
+                if not tools:
+                    print("All daemons failed, exiting.")
+                    break
         except KeyboardInterrupt:
             print("\nShutting down...")
 
