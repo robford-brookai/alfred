@@ -91,11 +91,14 @@ def mark_processed(
     For binary files, skips frontmatter parsing and just moves the file.
     """
     if not _is_binary(inbox_file):
-        # Update frontmatter only for text files
-        post = frontmatter.load(str(inbox_file))
-        post.metadata["status"] = "processed"
-        post.metadata["processed_at"] = datetime.now(timezone.utc).isoformat()
-        _atomic_write(inbox_file, frontmatter.dumps(post))
+        # Update frontmatter only for text files — best-effort, never block the move
+        try:
+            post = frontmatter.load(str(inbox_file))
+            post.metadata["status"] = "processed"
+            post.metadata["processed_at"] = datetime.now(timezone.utc).isoformat()
+            _atomic_write(inbox_file, frontmatter.dumps(post))
+        except Exception:
+            log.warning("writer.frontmatter_failed", file=str(inbox_file))
 
     # Move to processed dir
     processed_dir.mkdir(parents=True, exist_ok=True)
