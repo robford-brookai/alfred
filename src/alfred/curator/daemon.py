@@ -87,20 +87,11 @@ async def _process_file(
     try:
         inbox_content = inbox_file.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        # Binary file (image, video, etc.) — skip LLM processing, just move to processed
-        size_kb = inbox_file.stat().st_size / 1024
-        log.info("daemon.binary_skip", file=filename, size_kb=round(size_kb, 1))
-        if inbox_file.exists():
-            mark_processed(inbox_file, config.vault.processed_path)
-        state_mgr.state.mark_processed(
-            filename=filename,
-            inbox_path=str(inbox_file),
-            files_created=[],
-            files_modified=[],
-            backend_used=config.agent.backend,
+        # Binary file (docx, pdf, image, etc.) — tell the LLM to read it directly
+        inbox_content = (
+            f"[Binary file: {filename} — read it directly from: {inbox_file}]"
         )
-        state_mgr.save()
-        return
+        log.info("daemon.binary_passthrough", file=filename)
     except Exception as e:
         log.error("daemon.read_failed", file=filename, error=str(e))
         return
