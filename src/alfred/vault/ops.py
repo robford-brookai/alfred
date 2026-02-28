@@ -243,7 +243,7 @@ def vault_search(
         if grep_pattern:
             try:
                 content = md_file.read_text(encoding="utf-8")
-                if not re.search(grep_pattern, content, re.IGNORECASE):
+                if not re.search(re.escape(grep_pattern), content, re.IGNORECASE):
                     continue
             except (OSError, UnicodeDecodeError):
                 continue
