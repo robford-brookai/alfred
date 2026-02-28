@@ -83,18 +83,11 @@ async def _process_file(
     filename = inbox_file.name
     log.info("daemon.processing", file=filename)
 
-    # Read inbox content — handle both text and binary files
+    # Always pass the file to the LLM — read as text if possible, otherwise point to the file
     try:
         inbox_content = inbox_file.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        # Binary file (docx, pdf, image, etc.) — tell the LLM to read it directly
-        inbox_content = (
-            f"[Binary file: {filename} — read it directly from: {inbox_file}]"
-        )
-        log.info("daemon.binary_passthrough", file=filename)
-    except Exception as e:
-        log.error("daemon.read_failed", file=filename, error=str(e))
-        return
+    except (UnicodeDecodeError, ValueError):
+        inbox_content = f"[File: {filename} — read it directly from: {inbox_file}]"
 
     # Build vault context
     vault_context = build_vault_context(
