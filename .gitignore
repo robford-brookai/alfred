@@ -28,6 +28,12 @@ config.yaml
 tui-ink/node_modules/
 tui-ink/dist/
 
+# Private repos (separate standalone repos, not part of this monorepo)
+alfred-ctrl/
+alfred-saas/
+alfred-docs/
+alfred-documentation/
+
 # OS
 .DS_Store
 Thumbs.db
