@@ -75,10 +75,28 @@ def cmd_schedule(args: argparse.Namespace, raw: dict[str, Any]) -> None:
     schedule_cmd = args.schedule_cmd
 
     if schedule_cmd == "register":
+        from alfred._data import get_bundled_dir
         from alfred.temporal.schedules import load_schedule_defs_from_file, register_schedules
+
         runtime = _load_runtime(raw)
+
+        # Load user-provided schedule definitions
         defs = load_schedule_defs_from_file(args.file)
         print(f"Loaded {len(defs)} schedule definitions from {args.file}")
+
+        # Also load bundled schedule definitions
+        bundled_schedules = get_bundled_dir() / "examples" / "schedules.py"
+        if bundled_schedules.exists():
+            bundled_defs = load_schedule_defs_from_file(str(bundled_schedules))
+            # Merge: bundled defs first, user defs override by id
+            bundled_ids = {d["id"] for d in bundled_defs}
+            user_ids = {d["id"] for d in defs}
+            merged = bundled_defs + [d for d in defs if d["id"] not in bundled_ids]
+            new_bundled = len(bundled_ids - user_ids)
+            if new_bundled:
+                print(f"Added {new_bundled} bundled schedule definitions")
+            defs = merged
+
         count = asyncio.run(register_schedules(runtime, defs))
         print(f"Registered {count} schedules.")
 

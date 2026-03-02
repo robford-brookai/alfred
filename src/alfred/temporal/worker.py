@@ -54,6 +54,7 @@ async def run_worker(runtime: TemporalRuntime) -> None:
         activities_instance.check_day_of_week,
         activities_instance.load_json_state,
         activities_instance.save_json_state,
+        activities_instance.harvest_openclaw_sessions,
     ]
 
     client = await Client.connect(

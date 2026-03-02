@@ -243,6 +243,121 @@ class AlfredActivities:
         return datetime.now(timezone.utc).weekday()
 
     @activity.defn
+    async def harvest_openclaw_sessions(self) -> dict:
+        """Scan OpenClaw main agent sessions and push new messages to inbox."""
+        vault_path = Path(self.runtime.vault_path)
+        inbox_dir = vault_path / "inbox"
+        inbox_dir.mkdir(parents=True, exist_ok=True)
+
+        state_path = Path(self.runtime.log_dir) / "streams" / "openclaw_sessions_state.json"
+        state = json.loads(state_path.read_text("utf-8")) if state_path.exists() else {}
+        sessions_state: dict[str, Any] = state.get("sessions", {})
+
+        sessions_dir = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
+        if not sessions_dir.exists():
+            activity.logger.info("No OpenClaw main sessions directory found")
+            return {"sessions_scanned": 0, "new_batches": 0, "messages_harvested": 0}
+
+        scanned = 0
+        batches = 0
+        harvested = 0
+
+        for session_file in sorted(sessions_dir.glob("*.jsonl")):
+            if ".deleted." in session_file.name:
+                continue
+            scanned += 1
+            file_key = str(session_file)
+            prev = sessions_state.get(file_key, {})
+            processed_lines = prev.get("processed_lines", 0)
+
+            try:
+                all_lines = session_file.read_text("utf-8").splitlines()
+            except OSError:
+                continue
+
+            if len(all_lines) <= processed_lines:
+                continue
+
+            new_lines = all_lines[processed_lines:]
+            messages: list[dict[str, Any]] = []
+            for line in new_lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") != "message":
+                    continue
+                role = entry.get("role", "")
+                if role not in ("user", "assistant"):
+                    continue
+                # Extract text content only
+                content = entry.get("content", "")
+                if isinstance(content, list):
+                    text_parts = []
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                        elif isinstance(block, str):
+                            text_parts.append(block)
+                    content = "\n".join(text_parts)
+                if not content:
+                    continue
+                messages.append({"role": role, "content": content})
+
+            if not messages:
+                sessions_state[file_key] = {
+                    "processed_lines": len(all_lines),
+                    "session_id": session_file.stem,
+                    "last_harvested": datetime.now(timezone.utc).isoformat(),
+                }
+                continue
+
+            # Build markdown transcript
+            session_id = session_file.stem
+            first_user_msg = next((m["content"][:60] for m in messages if m["role"] == "user"), "chat")
+            batch_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+
+            lines_out = []
+            for msg in messages:
+                label = "User" if msg["role"] == "user" else "Assistant"
+                lines_out.append(f"**{label}:**\n{msg['content']}\n")
+
+            frontmatter = (
+                f"---\n"
+                f"title: 'OpenClaw Chat — {first_user_msg}'\n"
+                f"source: openclaw\n"
+                f"session_id: {session_id}\n"
+                f"agent_id: main\n"
+                f"harvested_at: {datetime.now(timezone.utc).isoformat()}\n"
+                f"message_count: {len(messages)}\n"
+                f"---\n\n"
+            )
+            body = "\n---\n\n".join(lines_out)
+            inbox_file = inbox_dir / f"openclaw-chat-{session_id}-{batch_ts}.md"
+            inbox_file.write_text(frontmatter + body, encoding="utf-8")
+
+            harvested += len(messages)
+            batches += 1
+            sessions_state[file_key] = {
+                "processed_lines": len(all_lines),
+                "session_id": session_id,
+                "last_harvested": datetime.now(timezone.utc).isoformat(),
+            }
+            activity.logger.info(
+                "Harvested %d messages from session %s", len(messages), session_id
+            )
+
+        # Save state
+        state["sessions"] = sessions_state
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+        return {"sessions_scanned": scanned, "new_batches": batches, "messages_harvested": harvested}
+
+    @activity.defn
     async def load_json_state(self, path: str) -> dict:
         """Load a JSON file and return its contents as a dict."""
         p = Path(path)
