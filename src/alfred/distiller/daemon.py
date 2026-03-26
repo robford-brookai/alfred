@@ -194,9 +194,7 @@ def recompute_source_md5s(
         except OSError:
             continue
         if fresh_md5 != sc.md5:
-            existing = state.files.get(sc.record.rel_path)
-            learn_records = existing.learn_records_created if existing else []
-            state.update_file(sc.record.rel_path, fresh_md5, learn_records)
+            state.update_file(sc.record.rel_path, fresh_md5)
             log.debug(
                 "extraction.md5_refreshed",
                 path=sc.record.rel_path,

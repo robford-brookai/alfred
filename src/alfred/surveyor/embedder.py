@@ -78,6 +78,13 @@ class Embedder:
                             action="drop_and_recreate",
                         )
                         self.milvus.drop_collection(self.collection_name)
+                        # Invalidate pipeline file-hash state so a full re-embed occurs
+                        try:
+                            files_state = getattr(self.state, "files", None)
+                            if isinstance(files_state, dict):
+                                files_state.clear()
+                        except Exception as e:
+                            log.warning("embedder.state_invalidate_failed", error=str(e))
                         break
             else:
                 return
