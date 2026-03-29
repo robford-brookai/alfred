@@ -32,6 +32,7 @@ class JanitorState:
         self.fix_log: list[FixLogEntry] = []  # permanent audit trail
         self.ignored: dict[str, str] = {}  # rel_path -> reason
         self.pending_writes: dict[str, str] = {}  # rel_path -> expected_md5
+        self.last_deep_sweep: str | None = None  # ISO timestamp
 
     def load(self) -> None:
         """Load state from disk if it exists."""
@@ -48,6 +49,7 @@ class JanitorState:
         self.fix_log = [FixLogEntry.from_dict(e) for e in raw.get("fix_log", [])]
         self.ignored = raw.get("ignored", {})
         self.pending_writes = raw.get("pending_writes", {})
+        self.last_deep_sweep = raw.get("last_deep_sweep")
         log.info("state.loaded", files=len(self.files), sweeps=len(self.sweeps))
 
     def save(self) -> None:
@@ -72,6 +74,7 @@ class JanitorState:
             "fix_log": [e.to_dict() for e in self.fix_log],
             "ignored": self.ignored,
             "pending_writes": self.pending_writes,
+            "last_deep_sweep": self.last_deep_sweep,
         }
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self.state_path.with_suffix(".tmp")

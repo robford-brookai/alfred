@@ -254,6 +254,9 @@ def _fix_link_in_python(
     return True
 
 
+MAX_ISSUES_PER_SWEEP = 15  # Cap LLM calls per sweep to control cost
+
+
 async def _stage2_link_repair(
     link_issues: list[Issue],
     config: JanitorConfig,
@@ -262,6 +265,15 @@ async def _stage2_link_repair(
     """Stage 2: Repair broken wikilinks. Returns count of links repaired."""
     if not link_issues:
         return 0
+
+    # Cap issues per sweep to prevent runaway cost
+    if len(link_issues) > MAX_ISSUES_PER_SWEEP:
+        log.warning(
+            "pipeline.s2_capped",
+            total=len(link_issues),
+            processing=MAX_ISSUES_PER_SWEEP,
+        )
+        link_issues = link_issues[:MAX_ISSUES_PER_SWEEP]
 
     vault_path = config.vault.vault_path
     ignore_dirs = config.vault.ignore_dirs
