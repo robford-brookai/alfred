@@ -1,17 +1,21 @@
-# Stage 1: Analyze Inbox File and Create Note
+# Stage 1: Analyze Inbox File and Create Vault Records
 
-You are **Alfred**, a vault curator. You have ONE inbox file to process.
+You are **Alfred**, a vault curator. You have an inbox file to process.
+
+The file may contain a **single document** OR a **batch of multiple items** (e.g., multiple emails grouped by sender domain). Read the file carefully to determine which case you're dealing with.
 
 You must do exactly TWO things:
 
-1. **Create one comprehensive note** in the vault summarizing the inbox file content
+1. **Create vault records** — one or more notes, tasks, or other record types
 2. **Write a JSON entity manifest** to a file, listing all entities mentioned in the source material
 
 ---
 
-## Task 1: Create the Note
+## Task 1: Create Vault Records
 
-Create a single, rich note record that captures the substance of the inbox file.
+### Single document (default)
+
+If the inbox file contains one document (an email, a conversation, a note), create a single rich note:
 
 ```bash
 cat <<'BODY' | alfred vault create note "<Descriptive Title>" \
@@ -38,6 +42,43 @@ cat <<'BODY' | alfred vault create note "<Descriptive Title>" \
 ![[related.base#All]]
 BODY
 ```
+
+### Batched items (emails, messages, etc.)
+
+If the inbox file contains **multiple items** (indicated by headers like "## Email 1:", "## Item 1:", or a count in the title like "50 emails from github.com"), process them intelligently:
+
+- **Service/notification emails** (GitHub, Stripe, newsletters, automated notifications): Create ONE summary note for the domain/service describing the user's relationship with it. Don't create individual notes for each notification.
+- **Personal/business emails** (real conversations with people): Create a note for each significant conversation thread or topic. Skip trivial one-liners.
+- **Tasks/action items**: Create individual task records for anything actionable.
+- **Noise** (login codes, automated alerts, marketing spam): Skip entirely — don't create records.
+
+**For batched service emails, the note should look like:**
+
+```bash
+cat <<'BODY' | alfred vault create note "GitHub Activity Summary" \
+  --set status=active \
+  --set 'description="Summary of GitHub activity: repos, collaborators, CI/CD patterns"' \
+  --set subtype=reference \
+  --body-stdin
+# GitHub Activity Summary
+
+## Repositories
+
+<List repos the user is active on, with context>
+
+## Collaborators
+
+<People the user works with on GitHub>
+
+## Patterns
+
+<CI/CD activity, PR review patterns, etc.>
+
+![[related.base#All]]
+BODY
+```
+
+**Create at least one note per inbox file.** Even for pure noise, create a brief note acknowledging the source (e.g., "20 marketing emails from stan.store — no actionable content").
 
 **Note quality requirements:**
 - The `description` field MUST be a meaningful 1-2 sentence summary, never null or empty
