@@ -15,14 +15,12 @@ You must do exactly TWO things:
 
 ### Single document (default)
 
-If the inbox file contains one document (an email, a conversation, a note), create a single rich note:
+If the inbox file contains one document (an email, a conversation, a note), create a single rich note.
 
-```bash
-cat <<'BODY' | alfred vault create note "<Descriptive Title>" \
-  --set status=active \
-  --set 'description="<1-2 sentence summary>"' \
-  --set 'project="[[project/Project Name]]"' \
-  --body-stdin
+**Step 1:** Use the **Write** tool to create a temporary file with the note body:
+
+Write to `/tmp/note-body.md`:
+```markdown
 # <Descriptive Title>
 
 ## Context
@@ -40,7 +38,12 @@ cat <<'BODY' | alfred vault create note "<Descriptive Title>" \
 <Any tasks, follow-ups, or next steps identified>
 
 ![[related.base#All]]
-BODY
+```
+
+**Step 2:** Use the **Bash** tool to create the vault record:
+
+```bash
+alfred vault create note "<Descriptive Title>" --set status=active --set 'description="<1-2 sentence summary>"' --set 'project="[[project/Project Name]]"' --body-stdin < /tmp/note-body.md
 ```
 
 ### Batched items (emails, messages, etc.)
@@ -52,14 +55,10 @@ If the inbox file contains **multiple items** (indicated by headers like "## Ema
 - **Tasks/action items**: Create individual task records for anything actionable.
 - **Noise** (login codes, automated alerts, marketing spam): Skip entirely — don't create records.
 
-**For batched service emails, the note should look like:**
+**For batched service emails, follow the same two-step pattern:**
 
-```bash
-cat <<'BODY' | alfred vault create note "GitHub Activity Summary" \
-  --set status=active \
-  --set 'description="Summary of GitHub activity: repos, collaborators, CI/CD patterns"' \
-  --set subtype=reference \
-  --body-stdin
+**Step 1:** Write to `/tmp/note-body.md`:
+```markdown
 # GitHub Activity Summary
 
 ## Repositories
@@ -75,7 +74,11 @@ cat <<'BODY' | alfred vault create note "GitHub Activity Summary" \
 <CI/CD activity, PR review patterns, etc.>
 
 ![[related.base#All]]
-BODY
+```
+
+**Step 2:** Run:
+```bash
+alfred vault create note "GitHub Activity Summary" --set status=active --set 'description="Summary of GitHub activity: repos, collaborators, CI/CD patterns"' --set subtype=reference --body-stdin < /tmp/note-body.md
 ```
 
 **Create at least one note per inbox file.** Even for pure noise, create a brief note acknowledging the source (e.g., "20 marketing emails from stan.store — no actionable content").
@@ -89,30 +92,34 @@ BODY
 
 ---
 
-## Task 2: Write the Entity Manifest to a File
+## Task 2: Write the Entity Manifest
 
-**CRITICAL: You MUST write the entity manifest JSON file.** This is not optional. The pipeline reads this file to create entity records. If you skip writing the file, no entities will be created and the extraction is lost.
+**CRITICAL: You MUST produce the entity manifest JSON.** This is not optional. The pipeline reads this to create entity records.
 
-After creating the note, write a JSON file listing entities that are **directly relevant to the vault owner** (see Relevance filter below).
+After creating the note, produce a JSON object listing entities that are **directly relevant to the vault owner** (see Relevance filter below). Even if you find zero entities, you MUST still produce: `{{"entities": []}}`
 
-**Write the JSON to this exact file path:** `{manifest_path}`
+Do NOT create these entities in the vault — just list them in the JSON. The pipeline will create them automatically.
 
-Do NOT create these entities in the vault — just list them in the JSON file. The pipeline will create them automatically.
+**Primary method:** Use the **Write** tool to write the JSON to this exact file path: `{manifest_path}`
 
-**Execute this command — do not just display it.** Even if you find zero entities, you MUST still write the file with an empty array: `{{"entities": []}}`
+**Fallback:** If the Write tool is unavailable or fails, include the JSON in your response inside a fenced code block marked `json`, like this:
 
-Write the file using a bash command like this:
+````
+```json
+{{"entities": [...]}}
+```
+````
 
-```bash
-cat > {manifest_path} <<'MANIFEST_EOF'
+**Example manifest content:**
+
+```json
 {{"entities": [
   {{"type": "person", "name": "John Smith", "description": "CTO at Acme Corp, discussed API integration", "fields": {{"org": "\"[[org/Acme Corp]]\"", "role": "CTO", "status": "active"}}}},
   {{"type": "org", "name": "Acme Corp", "description": "Client company, enterprise SaaS vendor", "fields": {{"org_type": "client", "status": "active"}}}},
   {{"type": "project", "name": "Acme API Integration", "description": "Integrate Acme's REST API with internal dashboard", "fields": {{"client": "\"[[org/Acme Corp]]\"", "status": "active"}}}},
   {{"type": "task", "name": "Send Acme API credentials", "description": "John to send staging API keys by Friday", "fields": {{"status": "todo", "project": "\"[[project/Acme API Integration]]\""}}}},
   {{"type": "decision", "name": "Use REST over GraphQL for Acme", "description": "Decided to use REST API due to better documentation", "fields": {{"status": "final", "confidence": "high"}}}}
-]}}
-MANIFEST_EOF
+]}}"
 ```
 
 **Entity extraction rules:**
@@ -170,10 +177,11 @@ Use this profile to determine what is relevant to the vault owner. Only extract 
 ## Important Rules
 
 - **Write everything in English.** Translate if the source is in another language. Keep proper nouns in original form.
-- **Use `alfred vault` commands for vault records.** The only direct filesystem write allowed is the entity manifest JSON to the specified `/tmp/` path.
-- **Do NOT create entity records** — only create the note. Write the entity manifest JSON to the specified file path.
+- **Use `alfred vault` commands for vault records.** Use the Write tool for the temporary note body file and the entity manifest JSON.
+- **Do NOT create entity records** — only create the note. The entity manifest JSON is for the pipeline to process.
 - **Do NOT move the inbox file** — the system handles this after processing.
 - **Prefer precision over recall** — only extract entities the vault owner directly interacts with. When in doubt, leave it out.
+- **Always produce the entity manifest** — even if empty. Use Write tool to write to the specified path, OR include it in your response as a ```json code block.
 
 ---
 
