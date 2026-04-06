@@ -177,6 +177,7 @@ async def run_sweep(
                 issues=issues,
                 config=config,
                 session_path=session_path,
+                state=state,
             )
 
             mutations = read_mutations(session_path)
@@ -362,9 +363,47 @@ async def run_watch(
 
         try:
             if hours_since_deep >= deep_interval_hours:
-                # Deep sweep with agent
-                log.info("daemon.deep_sweep")
-                await run_sweep(config, state, skills_dir, structural_only=False, fix_mode=True)
+                # Issue #15: event-driven deep sweeps — only run the expensive
+                # fix pipeline when there are NEW issues or changed files since
+                # the last deep sweep.  First do a structural scan to collect
+                # the current issue set, then compare against the stored snapshot.
+                log.info("daemon.deep_sweep_check")
+
+                # Run structural-only scan to get current issues
+                pre_scan_issues = run_structural_scan(config, state)
+                current_issue_map: dict[str, list[str]] = {}
+                for iss in pre_scan_issues:
+                    current_issue_map.setdefault(iss.file, []).append(iss.code.value)
+
+                # Detect files whose content hash changed since last snapshot
+                changed_files: set[str] = set()
+                for rel_path, fs in state.files.items():
+                    prev_md5 = fs.md5
+                    full = config.vault.vault_path / rel_path
+                    if full.exists():
+                        cur_md5 = file_hash(full)
+                        if cur_md5 != prev_md5:
+                            changed_files.add(rel_path)
+                            # Issue #15: reset enrichment staleness on content change
+                            state.reset_enrichment_staleness(rel_path)
+
+                new_issues = state.get_new_issues(current_issue_map)
+
+                if not new_issues and not changed_files:
+                    log.info(
+                        "daemon.deep_sweep_skipped",
+                        msg="no new issues, skipping deep sweep",
+                    )
+                else:
+                    log.info(
+                        "daemon.deep_sweep",
+                        new_issue_files=len(new_issues),
+                        changed_files=len(changed_files),
+                    )
+                    await run_sweep(config, state, skills_dir, structural_only=False, fix_mode=True)
+
+                # Store current issue snapshot for next comparison
+                state.save_sweep_issues(current_issue_map)
                 last_deep = now
                 state.last_deep_sweep = now.isoformat()
                 state.save()

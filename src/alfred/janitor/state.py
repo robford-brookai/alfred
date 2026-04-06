@@ -20,6 +20,10 @@ class FileState:
     md5: str
     last_scanned: str = ""
     open_issues: list[str] = field(default_factory=list)  # issue codes
+    # Issue #15: staleness tracking for Stage 3 stub enrichment
+    enrichment_attempts: int = 0
+    last_enrichment_attempt: str = ""
+    enrichment_stale: bool = False
 
 
 class JanitorState:
@@ -33,6 +37,8 @@ class JanitorState:
         self.ignored: dict[str, str] = {}  # rel_path -> reason
         self.pending_writes: dict[str, str] = {}  # rel_path -> expected_md5
         self.last_deep_sweep: str | None = None  # ISO timestamp
+        # Issue #15: event-driven deep sweeps — store previous sweep's issue snapshot
+        self.previous_sweep_issues: dict[str, list[str]] = {}  # rel_path -> [issue_codes]
 
     def load(self) -> None:
         """Load state from disk if it exists."""
@@ -50,6 +56,7 @@ class JanitorState:
         self.ignored = raw.get("ignored", {})
         self.pending_writes = raw.get("pending_writes", {})
         self.last_deep_sweep = raw.get("last_deep_sweep")
+        self.previous_sweep_issues = raw.get("previous_sweep_issues", {})
         log.info("state.loaded", files=len(self.files), sweeps=len(self.sweeps))
 
     def save(self) -> None:
@@ -67,6 +74,9 @@ class JanitorState:
                     "md5": fs.md5,
                     "last_scanned": fs.last_scanned,
                     "open_issues": fs.open_issues,
+                    "enrichment_attempts": fs.enrichment_attempts,
+                    "last_enrichment_attempt": fs.last_enrichment_attempt,
+                    "enrichment_stale": fs.enrichment_stale,
                 }
                 for rel, fs in self.files.items()
             },
@@ -75,6 +85,7 @@ class JanitorState:
             "ignored": self.ignored,
             "pending_writes": self.pending_writes,
             "last_deep_sweep": self.last_deep_sweep,
+            "previous_sweep_issues": self.previous_sweep_issues,
         }
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self.state_path.with_suffix(".tmp")
@@ -125,3 +136,51 @@ class JanitorState:
     def ignore_file(self, rel_path: str, reason: str = "") -> None:
         """Add a file to the ignore list."""
         self.ignored[rel_path] = reason
+
+    # --- Issue #15: enrichment staleness helpers ---
+
+    def record_enrichment_attempt(self, rel_path: str, max_attempts: int = 3) -> None:
+        """Increment enrichment attempt counter; mark stale after max_attempts."""
+        if rel_path not in self.files:
+            return
+        fs = self.files[rel_path]
+        fs.enrichment_attempts += 1
+        fs.last_enrichment_attempt = datetime.now(timezone.utc).isoformat()
+        if fs.enrichment_attempts >= max_attempts:
+            fs.enrichment_stale = True
+
+    def reset_enrichment_staleness(self, rel_path: str) -> None:
+        """Reset staleness when file content changes (hash mismatch)."""
+        if rel_path not in self.files:
+            return
+        fs = self.files[rel_path]
+        fs.enrichment_attempts = 0
+        fs.last_enrichment_attempt = ""
+        fs.enrichment_stale = False
+
+    def is_enrichment_stale(self, rel_path: str) -> bool:
+        """Return True if this file has exhausted enrichment attempts."""
+        if rel_path not in self.files:
+            return False
+        return self.files[rel_path].enrichment_stale
+
+    # --- Issue #15: event-driven deep sweep helpers ---
+
+    def get_new_issues(
+        self, current_issues: dict[str, list[str]],
+    ) -> dict[str, list[str]]:
+        """Compare current issues against previous snapshot.
+
+        Returns only files with NEW issue codes not in the previous snapshot.
+        """
+        new: dict[str, list[str]] = {}
+        for path, codes in current_issues.items():
+            prev_codes = set(self.previous_sweep_issues.get(path, []))
+            novel = [c for c in codes if c not in prev_codes]
+            if novel:
+                new[path] = novel
+        return new
+
+    def save_sweep_issues(self, issues: dict[str, list[str]]) -> None:
+        """Store the current sweep's issue snapshot for next comparison."""
+        self.previous_sweep_issues = issues
