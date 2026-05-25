@@ -10,8 +10,8 @@
 # restarts will hit Let's Encrypt rate limits.
 #
 # DNS: before `docker compose up -d`, point these A-records at the VM's
-# public IP — `@` (apex), `plane`, `sure`, `vault`, `mcp`. Caddy self-heals
-# ACME on retry, so a stale record only delays the first cert.
+# public IP — `@` (apex), `plane`, `sure`, `vault`, `mcp`, `sms`. Caddy
+# self-heals ACME on retry, so a stale record only delays the first cert.
 
 {
 	email {$ACME_EMAIL}
@@ -54,4 +54,15 @@ vault.{$DOMAIN} {
 mcp.{$DOMAIN} {
 	encode zstd gzip
 	reverse_proxy mcp-server:8787
+}
+
+# SMS — Twilio inbound webhook endpoint for Hermes' SMS gateway adapter.
+# Hermes' SMS adapter binds a SEPARATE listener on :8080 (SMS_WEBHOOK_PORT,
+# distinct from the gateway API server on :18789). Twilio POSTs inbound SMS
+# here; Hermes validates X-Twilio-Signature (HMAC-SHA1, post-PR #7933). In
+# the Twilio console, set the number's "A MESSAGE COMES IN" webhook to
+# `https://sms.{$DOMAIN}/webhooks/twilio`.
+sms.{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy hermes:8080
 }
