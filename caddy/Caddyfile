@@ -22,9 +22,31 @@
 # `wasp build` splits the app in two: the SPA is served here; its API
 # server lives on api.<domain> below. Distinct hosts — no path-prefix
 # ambiguity between client routes and server endpoints.
+#
+# EXCEPT: a small set of PUBLIC ctrl-api webhook paths must be reachable
+# on the apex domain because third-party services (OMI, Plane, Vexa,
+# arbitrary stream webhooks) compose their callback URLs from
+# TENANT_BASE_URL which is the apex (e.g. https://home.alfred.black).
+# Without this path-level handler, those requests would land on the SPA
+# nginx and get a 405 (POST on a static-file server). These paths are
+# also marked `isPublic` in ctrl-api's auth.ts — they validate via their
+# own webhook tokens / HMAC signatures, not the master Bearer key.
 {$DOMAIN} {
 	encode zstd gzip
-	reverse_proxy web-client:80
+
+	# Public webhook paths → ctrl-api directly. Exact prefixes only;
+	# anything else on the apex falls through to the SPA below.
+	@public_webhooks {
+		path /api/v1/streams/omi/* /api/v1/plane/webhook /api/v1/webhooks/plane/steward /api/v1/webhooks/vexa /api/v1/webhooks/in/*
+	}
+	handle @public_webhooks {
+		reverse_proxy ctrl-api:3100
+	}
+
+	# Everything else — the Wasp SPA.
+	handle {
+		reverse_proxy web-client:80
+	}
 }
 
 # API — the Wasp server (auth, operations, custom api routes).
