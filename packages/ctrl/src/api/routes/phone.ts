@@ -12,6 +12,11 @@ import { addRoute } from "../server.js";
 import { sendJson, ValidationError } from "../errors.js";
 import { dockerComposeCmd } from "../helpers.js";
 import { patchEnv } from "./credentials.js";
+import { getStateDb } from "../../db/state.js";
+import {
+  appendJournal,
+  bindPrincipalChannel,
+} from "../../db/alfredJournal.js";
 
 // Defaults match the merged single-VM stack's ctrl-api mounts: vault at
 // /vault (vault_data volume) and alfred-data at /alfred-data (alfred_data
@@ -972,6 +977,52 @@ export function registerPhoneRoutes(): void {
     };
 
     await ingestStreamEvent(event);
+
+    // One-Alfred continuity — Phase 3 of the /channels Phone wiring.
+    // Every completed voice call becomes a journal row keyed by
+    // (channel=voice, chat_id=<from_number>). The Hermes one-alfred plugin's
+    // pre_llm_call hook injects recent journal entries for the resolved
+    // principal across ALL channels — so Sir calls Alfred, hangs up, then
+    // DMs five minutes later on Telegram, and Alfred has the call summary
+    // in context. The principal_id auto-resolves via the binding (first
+    // call from a new number creates an unbound entry; an operator can
+    // later POST /api/v1/alfred-journal/principal/bind to link it).
+    //
+    // We bind preemptively in the realtime case because the alfred-voice
+    // skill confirms the caller is Sir before any meaningful tool use, so
+    // a transcript landing here is high-confidence Sir-spoken. If your
+    // policy is different, rip the bind line out — the appendJournal call
+    // works either way (it falls through to null principal_id).
+    //
+    // Failure is best-effort — never block the transcript ingest.
+    try {
+      const db = getStateDb();
+      if (from) {
+        bindPrincipalChannel(db, "voice", from, "owner");
+      }
+      appendJournal(db, {
+        channel: "voice",
+        chat_id: from || "unknown",
+        direction: "outbound",
+        message: summary,
+        source_kind: "voice-call-transcript",
+        source_ref: callId || event.source_ref,
+        metadata: {
+          to,
+          started_at: startedAt,
+          ended_at: endedAt,
+          duration_seconds: durationSeconds(startedAt, endedAt),
+          turn_count: transcript.length,
+        },
+      });
+    } catch (err) {
+      // Log and continue — the transcript is already in the stream log.
+      console.warn(
+        "[phone/transcript] alfred_journal append failed (non-blocking):",
+        err instanceof Error ? err.message : err,
+      );
+    }
+
     // Best-effort cross-channel-memory ping. Failure does not block.
     void notifyMainSession(`Phone call ended: ${summary}`);
     sendJson(res, 201, { status: "ingested", event_id: event.id });
