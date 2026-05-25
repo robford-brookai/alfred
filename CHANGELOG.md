@@ -5,6 +5,273 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the `alfred-vault` package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-05-25]
+
+Alfred Black becomes **one Alfred**. Until this release, a "delegate" from
+the Desk and a Telegram DM and the morning brief were three different
+sessions in three different worlds — when the principal replied to a
+reminder, the agent that received the reply had no memory of having sent
+it. This release lands the **One-Alfred continuity layer**: an append-only
+`alfred_journal` in `state.db`, a unified outbound endpoint that delivers
+every Alfred-spoken message in the same butler voice through the same
+channel adapter, and a Hermes plugin that injects recent journal entries
+as authoritative context on the next inbound turn. From the principal's
+seat there is now one Alfred who remembers the things he just said,
+across channels and across sessions.
+
+Around that centrepiece, **`/channels` Telegram and Slack go live** with
+parity surfaces: manifest-paste / token-paste setup, paired-chat
+management, send-test, disconnect, and runtime workspace info — all
+backed by `/api/v1/channels/{telegram,slack}/*` routes on ctrl-api that
+write directly to the per-profile Hermes `.env` (not the compose env)
+so changes actually reach the runtime. The init container preserves these
+runtime-managed keys (`TELEGRAM_*`, `SLACK_*`, `DISCORD_BOT_*`, …) across
+every `.env` re-render so a restart can no longer wipe a manually-set
+bot token.
+
+The **delegate pipeline** is wired end-to-end. `DecisionRouter` now
+fires `dispatch_action_to_agent` for `intent=delegate`; the
+`delegate-dispatch` path mints a re-routed signal terminal so the
+`SignalRouter` cannot loop on its own output; both the legacy and the
+ephemeral dispatch paths now honor `principal_note` as the canonical
+task (with `action_what` demoted to context) and the ephemeral path is
+on by default; `route_decision` budget grows from 60s to 1000s with a
+`recover_stuck_dispatching` safety net. The pre-existing
+`alfred__notify_principal` tool keeps working but the
+`/api/v1/notifications` endpoint is now a thin forwarder to the unified
+`/api/v1/alfred-deliver` so every outbound Alfred message goes through
+the same journal-aware writer.
+
+The Desk side of the loop closes too: every needs-attention action mints
+a `decision/<ts>.md` in `state=open` so observation extraction fires,
+the `/study#settings` page exposes **three Agent-autonomy toggles**
+(signal-action, state-mutator, auto-task-create) — defaulted to `live`
+and read from `state.db` settings — and the instinct scorer matches
+multi-word patterns at a lower `MATCH_THRESHOLD` so the loop actually
+closes. The signal→instinct path persists `matched_instinct` end-to-end
+and `/chores` chore-run observations land in `state.db` (not the vault).
+
+Fresh-deploy work continues: onboarding writes tasks in their rich shape
+with `parent_matter` linkage, status vocab is harmonised to the
+validator (`'queued' → 'todo'`), `matter/inbox.md` seeds on first boot
+as the orphan-fallback target, and `_resolve_parent_matter_path` now
+validates against real matters with a fuzzy 4-tier fallback so brand-new
+tenants don't write to a non-existent parent. The CLAUDE.md gets a full
+context rewrite for fresh clones.
+
+This is the second release under the post-`0522` lane protocol; the
+narrative continues to be: every loose end becomes a contract.
+
+### Added
+
+**One-Alfred continuity layer (the centrepiece)**
+- `state.db` gains an append-only `alfred_journal` (migration `0002`)
+  plus `alfred_principal` and `alfred_principal_channel` tables; every
+  outbound Alfred message and every inbound principal turn becomes a
+  journal row keyed by `principal_id × channel × chat_id` with a stable
+  `(ts, rowid)` ordering.
+- `POST /api/v1/alfred-journal` / `GET /api/v1/alfred-journal/recent` /
+  `POST /api/v1/alfred-journal/principal/bind` — the ctrl-api writer
+  surface for the journal, with helpers split into
+  `packages/ctrl/src/db/alfredJournal.ts` so the DB layer is
+  unit-testable without booting `server.ts`.
+- `POST /api/v1/alfred-deliver` — the **single butler-voiced outbound**.
+  Used by `notify_principal`, by the delegate handoff, and by the Desk
+  "Hand it to Alfred" action; speaks directly to `api.telegram.org` and
+  to `slack.com/api/chat.postMessage` (no Hermes webhook roundtrip),
+  records every send in `alfred_journal`, and includes a small
+  retry-with-backoff envelope.
+- `packages/hermes/plugins/one-alfred/` — a Hermes plugin with three
+  hooks: `pre_gateway_dispatch` rewrites inbound principal turns,
+  `pre_llm_call` journals the principal's text and injects recent
+  journal entries as **authoritative** continuity (`[ALFRED-CONTINUITY
+  — authoritative]` + "these DID happen"), `post_llm_call` journals
+  Alfred's reply. 5-second dedupe latch. Per-(user, channel) Hermes
+  session keys (`agent:main:telegram:dm:<chat_id>`).
+- `packages/hermes/Dockerfile` bakes the plugin in;
+  `packages/hermes/docker/supervisor.sh` refreshes it on every container
+  boot with an mtime check; `hermes-config.yaml.njk` enables the plugin
+  on the `main` profile only.
+- `docs/design/one-alfred.md` — the architecture document, with verified
+  Hermes hook citations.
+
+**Channels — Telegram (`/channels` Telegram card)**
+- `GET /api/v1/channels/telegram/status` — running-state, paired chats,
+  workspace info, error strings.
+- `PUT /api/v1/channels/telegram/token` / `DELETE …/token` — token
+  paste-and-save, writes to the per-profile Hermes `.env` (not the
+  compose env), debounced restart.
+- `POST /api/v1/channels/telegram/test` — sends a real test message via
+  the Bot API so the principal can prove the link works.
+- `DELETE /api/v1/channels/telegram/chats/:user_id` — revoke a paired
+  chat in place.
+- `packages/web/src/dashboard/ChannelsPage.tsx` Telegram card: paired-chat
+  list with revoke, send-test, disconnect, copy-link-to-bot, valid-token
+  preflight (`isProbablyValidTelegramBotToken` mirrored on both sides).
+- 6-case `tests/telegram-routes.test.ts` covers status / token / test /
+  chats / revoke.
+- Bot-token regex relaxed from `^\d{8,12}:[A-Za-z0-9_-]{35}$` to
+  `^\d{8,15}:[A-Za-z0-9_-]{30,}$` so modern Telegram tokens stop
+  bouncing at the gate (matches Hermes' own `hermes_cli/setup.py`).
+
+**Channels — Slack (`/channels` Slack card)**
+- Six surfaces on ctrl-api: `GET /api/v1/channels/slack/status`,
+  `GET …/manifest` (from `hermes slack manifest`), `PUT …/tokens`,
+  `DELETE …/tokens`, `POST …/test`, plus an exported
+  `slackPostMessage()` used by `/api/v1/alfred-deliver`.
+- 5-step manifest-paste setup wizard, two-token save (`xoxb-` bot +
+  `xapp-` app for socket mode), running-state workspace card (team /
+  bot user / URL), Phase-2 options fold-out (`SLACK_ALLOWED_USERS`,
+  `SLACK_HOME_CHANNEL`, `SLACK_ALLOWED_CHANNELS`).
+- `packages/web/src/dashboard/slackCardCore.ts` — pure derivation,
+  8/8 unit tests; isolated from React so the four card states
+  (unconfigured / starting / running / error) verify under `node:test`.
+- Token validators (`BOT_TOKEN_RE`, `APP_TOKEN_RE`) shared in spirit
+  between ctrl-api and the web card.
+
+**Agent-autonomy toggles**
+- `GET / PUT /api/v1/settings` with a `SETTINGS_KEYS` registry; handles
+  `signal_action_mode`, `state_mutator_mode`, `auto_task_create_mode`
+  (`live | shadow | off`).
+- `/study#settings` UI renders the three toggles with provenance and a
+  shadow-mode explainer; defaults are `live`.
+- `alfred-learn` reads each mode from the settings file at activity
+  time and falls through to `live` when unset.
+
+**Telegram + Slack delivery in the same butler voice**
+- `legacy_prompt` in `dispatch_action_to_agent` now honors
+  `principal_note` as the canonical task and demotes `action_what` to
+  `"Signal: …"` context; names `alfred__notify_principal` explicitly so
+  the agent knows the tool exists.
+- `DISPATCH_USE_EPHEMERAL_EXECUTOR=1` is the default in
+  `docker-compose.yaml` so the ephemeral path is on for fresh deploys.
+- `recover_stuck_dispatching` activity sweeps in-flight delegations on
+  worker boot.
+
+**Onboarding / fresh-deploy correctness**
+- `matter/inbox.md` is seeded on first boot as the orphan-fallback
+  target (sir-fresh-deploy #1).
+- `_resolve_parent_matter_path` validates against real matters with a
+  4-tier fuzzy fallback (sir-fresh-deploy #2).
+- `backfill_orphan_task_matter_refs` one-shot activity for the existing
+  32 tasks that landed without `parent_matter` (sir-matter-task #2).
+- Onboarding writes tasks in their rich shape with `parent_matter`
+  linkage (sir-matter-task #1).
+- New tasks created by the auto-task path always carry `parent_matter`
+  (sir-matter-task #4).
+
+**Sir-8 / earlier loose ends folded in**
+- `/channels` **Terminal card** with `GET /api/v1/system/ssh-info`,
+  `docker exec` quick-actions, and host `authorized_keys` mounted into
+  ctrl-api so the principal can SSH in.
+- `/connections` app icons render as `<img>` from the apps endpoint.
+- `/chores` description full-render; "what this chore does" summary on
+  the list and on the detail.
+- `/household` reads `RULES.md` from vault records (not workspace
+  files) — single source of truth.
+- Hermes auth-unhealthy banner with a re-auth CTA on `/connections`.
+- C-OB1 person/org gate is Unicode-aware (accepts e.g. "Üveges Gábor")
+  with a red repro test in `packages/ctrl/tests/`.
+
+### Changed
+
+**Delegate pipeline (end-to-end)**
+- `DecisionRouter` fires `dispatch_action_to_agent` for
+  `intent=delegate` (post-#216); the dispatch handler suppresses its
+  own decision-mirror when invoked from the router so the Desk doesn't
+  see a duplicate (#218 round 2).
+- `delegate-dispatch` mints the re-routed signal in **terminal** state
+  so the `SignalRouter` cannot loop on its own output (#216).
+- Every legacy needs-attention action also mints a `decision/<ts>.md`
+  in `state=open` so observation extraction fires (Gap 4 / Gap 5).
+- `/api/v1/notifications` is now a thin forwarder to
+  `/api/v1/alfred-deliver` — hard switch, no parallel path.
+- `route_decision` Temporal budget grows from 60s to 1000s; a
+  `recover_stuck_dispatching` activity catches the long tail
+  (sir-incident 2026-05-25).
+
+**Init container & runtime config**
+- `_RUNTIME_KEY_PREFIXES = ("TELEGRAM_", "SLACK_", "DISCORD_BOT_",
+  "WHATSAPP_", "SIGNAL_", "MATRIX_", "MATTERMOST_", "BLUEBUBBLES_")`
+  in `packages/hermes/init/render_hermes.py`; the renderer now uses
+  `_merge_preserve_runtime_keys()` to keep any value the ctrl-api
+  channel routes have written, across re-renders.
+- The init step that renders `gateway.platforms.telegram` is now the
+  source of truth for Telegram wiring; `TELEGRAM_BOT_TOKEN` passthrough
+  flows compose → per-profile `.env` → Hermes.
+
+**Signal & instinct loop**
+- Instinct scorer matches **multi-word patterns**; `MATCH_THRESHOLD`
+  drops from 0.15 to 0.10 to 0.05 across two rounds so the loop
+  actually finds matches (Gap 5b).
+- Unconfirmed instincts are included in the matcher load (Gap 3).
+- The signal→instinct loop persists `matched_instinct` end-to-end so
+  `/instincts` correctly reflects what fired (Sir #4 + #5).
+- Chore-run observation seeding routes to `state.db` (not the vault)
+  (Gap 5c).
+
+**Onboarding pipeline (continued from 2026-05-24)**
+- Task status vocab harmonised to the validator (`'queued' → 'todo'`)
+  end-to-end; tests assert the new shape (sir-matter-task round-2).
+- First Brief reshapes to an intro paragraph + an actionable section
+  rather than a delta-shrug (Sir #1).
+- Layered `needs_attention` dedup (Sir #2).
+- Plane auto-seeds the first admin so `/plane` isn't blank on a fresh
+  tenant (Sir #6).
+
+**Web UI polish**
+- `/study#agent` MCP-servers panel shows Plane + Sure (was missing);
+  "Vault" is renamed "Vaultwarden" everywhere it referred to the
+  password manager.
+- `/study#settings` gains the three Agent-autonomy toggles.
+
+### Fixed
+
+- `/channels` Telegram card: the broken `POST /pair` endpoint (which
+  called a non-existent `hermes pairing mint` subcommand) is **dropped**
+  and replaced by `POST /test` + `DELETE /chats/:user_id`; the card
+  reads the real `paired_chats` list instead of showing a permanent
+  "Pair this chat" prompt.
+- `alfred-deliver` no longer routes through a Hermes webhook
+  subscription — it delivers bytes directly to the bot API and journals
+  the result. The webhook-subscription roundtrip was extra latency, an
+  extra failure mode, and produced no benefit.
+- `one-alfred` plugin: `post_llm_call` now accepts both
+  `assistant_response` (Hermes' real kwarg) and `response_text` (the
+  earlier guess) — the silent no-op is gone.
+- `one-alfred` plugin: continuity framing rewritten from a polite
+  advisory (`"Use this to maintain the illusion"`) to **authoritative**
+  (`[ALFRED-CONTINUITY — authoritative]` … `"these DID happen"`) — the
+  LLM was deferring to its empty session history and replying
+  `"I don't remember sending you a reminder."`
+- `one-alfred` plugin: re-injection latch drops from 10 minutes to
+  5 seconds — Sir's quick replies were getting no context.
+- Telegram bot-token validator relaxed (regex `{30,}` rather than
+  `{35}` exact) — modern Telegram tokens were 400-ing at the gate.
+- Init `.env` renderer no longer wipes manually-set `TELEGRAM_*` /
+  `SLACK_*` values on rerun.
+- `ctrl-api` Telegram channel routes now write to the **per-profile
+  Hermes `.env`** (not the compose env) — the change actually reaches
+  the runtime now.
+- Hermes web dashboard at `hermes.{$DOMAIN}` reverted; the upstream
+  image doesn't bake the web dist and the `--skip-build` workaround was
+  not the right shape — dropped for now.
+- `voice-bridge`-class delivery path documented as the exception that
+  still talks to Hermes directly (not in scope for this release).
+
+### Migration notes
+
+- The `state.db` migration `0002_alfred_journal.sql` runs
+  transactionally on ctrl-api boot. It is additive (three new tables +
+  indexes + a seed owner principal); no data migration required.
+- The `/api/v1/notifications` endpoint is now a thin forwarder to
+  `/api/v1/alfred-deliver`; callers continue to work unchanged.
+- The `DISPATCH_USE_EPHEMERAL_EXECUTOR` env var defaults to `1` in
+  `docker-compose.yaml`. Set it to `0` to revert to the legacy
+  dispatch path.
+- The `one-alfred` Hermes plugin is enabled on the `main` profile
+  only; the `workers` profile is unchanged.
+
 ## [2026-05-24]
 
 Alfred Black goes from "a Hermes runtime with tools" to "an agent with a
