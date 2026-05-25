@@ -211,7 +211,10 @@ export function createApiServer(): http.Server {
         pathname === "/api/v1/webhooks/vexa" ||
         pathname.startsWith("/api/v1/webhooks/in/");
       if (!isPublic) {
-        authenticate(req);
+        // Pass method+pathname so the scoped-token path can check the
+        // route allowlist (see auth.ts VOICE_BRIDGE_ALLOWLIST). The master
+        // key path ignores this argument.
+        authenticate(req, { method, pathname });
       }
 
       // Cross-tenant auth is bearer-token only; X-Tenant-ID is NOT a real
