@@ -270,6 +270,87 @@ export const disconnectSlack = async (_args: unknown, context: any) => {
   });
 };
 
+// Lane III (SMS) — SMS channel on /channels. Mirrors the Slack/Telegram op
+// set; backed by Lane I's ctrl-api endpoints under /api/v1/channels/sms/*.
+// Shape:
+//   getSmsChannelStatus      → { configured, state, error, phone_number,
+//                                account_sid_masked, allowed_users }
+//                              (state lives in smsCardCore.SmsState)
+//   setSmsCredentials        → 200 { ok, state }
+//   sendSmsTest              → 200 { ok, sid }  or throws
+//   disconnectSms            → 200 { ok }
+//   getSmsAuthorizedUsers    → string (comma-separated, same content as
+//                              `allowed_users` in status — split out so the
+//                              dedicated allowed-users panel has a single
+//                              source of truth without re-fetching status)
+export const getSmsChannelStatus = async (
+  _args: unknown,
+  context: any,
+) => {
+  const instance = await getUserInstance(context);
+  return proxyToTenant(instance, {
+    path: "/api/v1/channels/sms/status",
+  });
+};
+
+export const setSmsCredentials = async (
+  args: {
+    account_sid: string;
+    auth_token: string;
+    phone_number: string;
+    allowed_users?: string;
+  },
+  context: any,
+) => {
+  if (
+    !args?.account_sid?.trim() ||
+    !args?.auth_token?.trim() ||
+    !args?.phone_number?.trim()
+  ) {
+    throw new HttpError(
+      400,
+      "account_sid, auth_token and phone_number are required",
+    );
+  }
+  const instance = await getUserInstance(context);
+  return proxyToTenant(instance, {
+    method: "PUT",
+    path: "/api/v1/channels/sms/credentials",
+    body: {
+      account_sid: args.account_sid.trim(),
+      auth_token: args.auth_token.trim(),
+      phone_number: args.phone_number.trim(),
+      allowed_users: args.allowed_users?.trim() ?? "",
+    },
+  });
+};
+
+export const sendSmsTest = async (_args: unknown, context: any) => {
+  const instance = await getUserInstance(context);
+  return proxyToTenant(instance, {
+    method: "POST",
+    path: "/api/v1/channels/sms/test",
+  });
+};
+
+export const disconnectSms = async (_args: unknown, context: any) => {
+  const instance = await getUserInstance(context);
+  return proxyToTenant(instance, {
+    method: "DELETE",
+    path: "/api/v1/channels/sms/credentials",
+  });
+};
+
+export const getSmsAuthorizedUsers = async (
+  _args: unknown,
+  context: any,
+) => {
+  const instance = await getUserInstance(context);
+  return proxyToTenant(instance, {
+    path: "/api/v1/channels/sms/allowed-users",
+  });
+};
+
 // ============================================================
 // Dashboard Home
 // ============================================================
