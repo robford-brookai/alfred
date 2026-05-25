@@ -118,3 +118,53 @@ def test_template_takes_precedence_for_allowlisted_keys(tmp_path: Path) -> None:
     out = _merge_preserve_runtime_keys(rendered, env_path)
     parsed = _parse_env_keys(out)
     assert parsed["TELEGRAM_BOT_TOKEN"] == "template-set"
+
+
+def test_merge_preserves_twilio_and_sms_keys_from_existing_env(tmp_path: Path) -> None:
+    """SMS parity with the TELEGRAM_* preservation: the four runtime keys
+    that ctrl-api's /channels SMS card writes into the per-profile .env
+    must survive a re-render of the .env from the .njk template.
+
+    Synthetic values only — `AC` + 32 zeros for the SID and 32 zeros for
+    the auth token match Twilio's real shape without exposing a live
+    credential. allowed_users is a comma-separated E.164 list; home_channel
+    is a single E.164.
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "OPENROUTER_API_KEY=oldkey\n"
+        "TWILIO_ACCOUNT_SID=AC" + ("0" * 32) + "\n"
+        "TWILIO_AUTH_TOKEN=" + ("0" * 32) + "\n"
+        "TWILIO_PHONE_NUMBER=+15550100\n"
+        "SMS_ALLOWED_USERS=+15550101\n"
+    )
+    rendered = (
+        "API_SERVER_PORT=18789\n"
+        "OPENROUTER_API_KEY=newkey\n"  # template still wins for provider keys
+    )
+    out = _merge_preserve_runtime_keys(rendered, env_path)
+    parsed = _parse_env_keys(out)
+
+    # Template wins for OPENROUTER_API_KEY (not in the runtime allowlist).
+    assert parsed["OPENROUTER_API_KEY"] == "newkey"
+    # All four SMS-related keys preserved from the existing .env.
+    assert parsed["TWILIO_ACCOUNT_SID"] == "AC" + ("0" * 32)
+    assert parsed["TWILIO_AUTH_TOKEN"] == "0" * 32
+    assert parsed["TWILIO_PHONE_NUMBER"] == "+15550100"
+    assert parsed["SMS_ALLOWED_USERS"] == "+15550101"
+    # The preservation footer comment is still emitted.
+    assert "preserved across init re-renders" in out
+
+
+def test_twilio_and_sms_prefixes_are_in_the_allowlist() -> None:
+    """Pin the two new prefixes so a future refactor can't silently drop
+    them and re-introduce the wipe-on-re-render regression for SMS keys."""
+    assert "TWILIO_" in _RUNTIME_KEY_PREFIXES, (
+        "TWILIO_ must be in _RUNTIME_KEY_PREFIXES — covers "
+        "TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER."
+    )
+    assert "SMS_" in _RUNTIME_KEY_PREFIXES, (
+        "SMS_ must be in _RUNTIME_KEY_PREFIXES — covers SMS_ALLOWED_USERS "
+        "and any future SMS_HOME_CHANNEL / SMS_ALLOW_ALL_USERS / "
+        "SMS_INSECURE_NO_SIGNATURE keys the /channels SMS card writes."
+    )

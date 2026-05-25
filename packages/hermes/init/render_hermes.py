@@ -171,6 +171,15 @@ _RUNTIME_KEY_PREFIXES: tuple[str, ...] = (
     "MATRIX_",
     "MATTERMOST_",
     "BLUEBUBBLES_",
+    # TWILIO_* covers the SMS adapter credential triplet — TWILIO_ACCOUNT_SID,
+    # TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER — written into the per-profile
+    # .env by ctrl-api's /channels SMS card.
+    "TWILIO_",
+    # SMS_* covers the SMS adapter's user-allowlist + optional knobs
+    # (SMS_ALLOWED_USERS, SMS_HOME_CHANNEL, SMS_ALLOW_ALL_USERS,
+    # SMS_INSECURE_NO_SIGNATURE). Same wipe-on-re-render regression as the
+    # TELEGRAM_/SLACK_ triplets if it were omitted.
+    "SMS_",
 )
 
 
