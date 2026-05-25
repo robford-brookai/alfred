@@ -16,6 +16,7 @@ import { getStateDb } from "../../db/state.js";
 import {
   appendJournal,
   bindPrincipalChannel,
+  queryRecentJournal,
 } from "../../db/alfredJournal.js";
 
 // Defaults match the merged single-VM stack's ctrl-api mounts: vault at
@@ -211,19 +212,15 @@ function buildVoiceContext(): VoiceContextBundle {
   const openMatters = listVaultRecords("matter", "active");
   const openTasks = listVaultRecords("task", "active");
 
-  // Recent main-agent sessions: tail the system-openclaw-sessions stream.
-  const sessionEvents = readJsonlTail(
-    `${STREAMS_DIR}/system-openclaw-sessions.jsonl`,
-    20,
-  );
-  const recentSessions = sessionEvents.map((e) => ({
-    at: typeof e.received_at === "string" ? e.received_at : "",
-    channel:
-      typeof e.metadata === "object" && e.metadata
-        ? String((e.metadata as any).channel ?? "openclaw")
-        : "openclaw",
-    summary: typeof e.summary === "string" ? e.summary : "",
-  }));
+  // Recent main-agent sessions across channels: pulled from alfred_journal,
+  // scoped to the owner principal (Telegram + Slack + SMS + voice all bind to
+  // 'owner' on first contact). Phase 4 fix — until 2026-05-25 this tailed
+  // streams/system-openclaw-sessions.jsonl, which is an OpenClaw-era file
+  // that doesn't exist on the Hermes-only stack; the section therefore
+  // never appeared in the primer. queryRecentJournal returns BOTH directions
+  // (Sir's inbound + Alfred's outbound) so the voice agent sees full turns
+  // of the recent conversation context, not just half of it.
+  const recentSessions = safeRecentJournal();
 
   return {
     memoryMd,
@@ -234,6 +231,39 @@ function buildVoiceContext(): VoiceContextBundle {
     composioToolkits: readComposioToolkits(),
     generatedAt: new Date().toISOString(),
   };
+}
+
+function safeRecentJournal(): Array<{
+  at: string;
+  channel: string;
+  summary: string;
+}> {
+  // Defensive: never let a transient DB hiccup break voice-context. The
+  // bundle is best-effort by design (the bridge tolerates null); a missing
+  // recent-sessions section just means the voice agent runs on its
+  // baseline context.
+  try {
+    const db = getStateDb();
+    const entries = queryRecentJournal(
+      db,
+      { principal_id: "owner" },
+      { limit: 20, within_hours: 168 }, // last 7 days
+    );
+    return entries.map((e) => ({
+      at: e.ts,
+      channel: e.channel,
+      // Truncate to 200 chars so a single long message doesn't blow the
+      // primer budget; the agent reads the freshness signal, not the body.
+      summary:
+        e.message.length > 200 ? e.message.slice(0, 200) + "…" : e.message,
+    }));
+  } catch (err) {
+    console.warn(
+      "[voice-context] recent-journal query failed (non-blocking):",
+      err instanceof Error ? err.message : err,
+    );
+    return [];
+  }
 }
 
 function getVoiceContextCached(): VoiceContextBundle {

@@ -6,8 +6,36 @@
 //                                  bundle for the Realtime instructions primer.
 //                                  Best-effort; failure means the agent loses
 //                                  cross-channel memory but the call still works.
+//
+// Two deploy modes:
+//   * Single-VM (alfred-black): ctrl-api is on the same compose network as
+//     this bridge. Set AAS_API_KEY + TWILIO_PHONE_NUMBER on the bridge env
+//     and we short-circuit the SaaS handshake — voice-context, transcript
+//     ingest, and tenant identity all come from the local ctrl-api at
+//     ${SAAS_INTERNAL_URL} (which on alfred-black is http://ctrl-api:3100).
+//   * Multi-tenant SaaS (legacy): the bridge calls a SaaS internal endpoint
+//     to look up the per-tenant tailscale host + AAS key, then hits the
+//     tenant's ctrl-api over Tailscale on :3100.
 
 import { config } from "./config.js";
+
+/** Single-VM mode is engaged when AAS_API_KEY is set on the bridge env. */
+function singleVmMode(): boolean {
+  return Boolean(config.aasApiKey);
+}
+
+/** Build the ctrl-api URL for the current deploy mode. */
+function ctrlApiUrl(tenant: TenantContext, path: string): string {
+  if (singleVmMode()) {
+    return `${config.saasInternalUrl}${path}`;
+  }
+  return `https://${tenant.tailscaleHost}:3100${path}`;
+}
+
+/** The Bearer token for the ctrl-api call. */
+function ctrlApiAuthToken(tenant: TenantContext): string {
+  return singleVmMode() ? config.aasApiKey : tenant.aasApiKey;
+}
 
 export interface TenantContext {
   tailscaleHost: string;
@@ -35,6 +63,17 @@ export interface VoiceContextBundle {
 export async function fetchTenantContext(
   tenantId: string,
 ): Promise<TenantContext> {
+  // Single-VM short-circuit: there's no SaaS to ask, so synthesize a
+  // TenantContext from env. tailscaleHost stays as a sentinel string ("local")
+  // because the URL builders above already key off singleVmMode().
+  if (singleVmMode()) {
+    return {
+      tailscaleHost: "local",
+      aasApiKey: config.aasApiKey,
+      phoneNumber: config.ownerPhoneNumber || null,
+    };
+  }
+
   const url = `${config.saasInternalUrl}/api/internal/voice-bridge/tenant/${encodeURIComponent(tenantId)}`;
   const res = await fetch(url, {
     method: "GET",
@@ -58,11 +97,11 @@ export async function fetchTenantContext(
 export async function fetchVoiceContext(
   tenant: TenantContext,
 ): Promise<VoiceContextBundle | null> {
-  const url = `https://${tenant.tailscaleHost}:3100/api/v1/phone/voice-context`;
+  const url = ctrlApiUrl(tenant, "/api/v1/phone/voice-context");
   try {
     const res = await fetch(url, {
       method: "GET",
-      headers: { Authorization: `Bearer ${tenant.aasApiKey}` },
+      headers: { Authorization: `Bearer ${ctrlApiAuthToken(tenant)}` },
       signal: AbortSignal.timeout(3_500),
     });
     if (!res.ok) return null;
@@ -91,12 +130,12 @@ export async function postCallTranscript(
     summary?: string;
   },
 ): Promise<void> {
-  const url = `https://${tenant.tailscaleHost}:3100/api/v1/phone/transcript`;
+  const url = ctrlApiUrl(tenant, "/api/v1/phone/transcript");
   try {
     await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${tenant.aasApiKey}`,
+        Authorization: `Bearer ${ctrlApiAuthToken(tenant)}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),

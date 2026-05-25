@@ -24,6 +24,16 @@ export const config = {
   // with SaaS on the same VM, so this is reachable over the host network.
   saasInternalUrl: optional("SAAS_INTERNAL_URL", "https://alfred.black"),
 
+  // Single-VM mode. When set, the bridge skips the legacy SaaS tenant
+  // handshake (fetchTenantContext) and talks to the local ctrl-api directly
+  // for voice-context + tenant identity. Both env vars must be present to
+  // engage this path; if either is absent the SaaS-handshake fallback kicks
+  // in and the bridge tries https://<tailscaleHost>:3100 (legacy multi-
+  // tenant deploys). On the alfred-black single-VM build, docker-compose
+  // sets AAS_API_KEY + TWILIO_PHONE_NUMBER so this is always engaged.
+  aasApiKey: optional("AAS_API_KEY", ""),
+  ownerPhoneNumber: optional("TWILIO_PHONE_NUMBER", ""),
+
   // OpenAI Realtime config. Default model tracks the latest GA slug.
   openaiApiKey: required("OPENAI_API_KEY"),
   openaiModel: optional("OPENAI_REALTIME_MODEL", "gpt-realtime-1.5"),

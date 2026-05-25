@@ -575,6 +575,12 @@ services:
       # the bridge calls back for tenant lookup, tool dispatch, and (in
       # Phase 3) alfred_journal writes on transcript ingest.
       SAAS_INTERNAL_URL: http://ctrl-api:3100
+      # Phase 4 single-VM short-circuit. When AAS_API_KEY is set the bridge
+      # skips the legacy SaaS tenant handshake and talks to ctrl-api at
+      # SAAS_INTERNAL_URL directly with this Bearer. TWILIO_PHONE_NUMBER is
+      # the calling identity surfaced to the realtime agent's system prompt.
+      AAS_API_KEY: ${AAS_API_KEY}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER:-}
       MAX_CALL_SECONDS: "1800"
       IDLE_HANGUP_SECONDS: "60"
     healthcheck:
