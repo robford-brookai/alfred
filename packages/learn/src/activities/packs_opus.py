@@ -1061,13 +1061,13 @@ def _union_related(existing: Any, additions: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 # C-OB1 person filter — non-human / truncated names must NOT reach the vault.
 # ---------------------------------------------------------------------------
-# Live evidence (fixture onboarding_golden/, 2026-05-23):
+# Live-run evidence motivating the filter:
 # * ``person/Github Notifications.md`` — Pass B's LLM emitted a system
 #   sender as a person.
-# * ``person/Test U.md`` — Pass A copied a key_people string the
-#   matter generator truncated mid-surname.
-# * ``person/test@example.com.md`` — would have been written if the
-#   facts list ever named an email as an entity.
+# * a truncated-surname duplicate person record — Pass A copied a
+#   key_people string the matter generator truncated mid-surname.
+# * an email-as-name record — would have been written if the facts
+#   list ever named an email address as an entity.
 # The two helpers below gate _create_or_merge_entity's person path.
 
 import re as _re_person_filter

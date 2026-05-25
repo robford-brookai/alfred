@@ -5,10 +5,9 @@
 > KILL, or LOG against the promotion contract in the top-level `CLAUDE.md`
 > ("vault is the principal's surface — bookkeeping lives in SQLite").
 >
-> Fixture this is grounded against:
-> `packages/learn/tests/fixtures/onboarding_golden/` — the full
-> `2026-05-23` fresh-onboarding run on test.alfred.black (5000 emails,
-> 206 facts, 22 patterns).
+> The KEEP / GATE / KILL / LOG verdicts in this document were derived
+> from a fresh-onboarding live run against a real email corpus, then
+> generalised away from any single principal's data.
 
 ## Pipeline Stages → Activities
 

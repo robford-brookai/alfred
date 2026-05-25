@@ -524,13 +524,13 @@ guarding regressions.
   cross-lane interface document.
 
 **Golden-fixture quality suite (learn)**
-- An `onboarding_golden` fixture + `MANIFEST` is checked in as the
-  reproducible input corpus (Phase 0).
-- A golden-assertion suite asserts post-onboarding vault quality
-  (Phase 0).
+- A reproducible input-corpus fixture and assertion suite were used
+  during this campaign to assert post-onboarding vault quality (Phase 0).
+  The fixture itself carried real principal PII and is not part of the
+  public source tree.
 - An inventory of every onboarding vault-write generator is documented.
-- Phase-0 frozen-fixture spec assertions are `xfail`ed in Phase 5 to keep
-  the suite green during the transition without losing the signal.
+- Phase-0 spec assertions are `xfail`ed in Phase 5 to keep the suite
+  green during the transition without losing the signal.
 - Targeted pins: `decision → observation instinct_ref` stamping (F39);
   the router-sees-decisions contract post `index-on-write` (F31); a
   0-obs seeded instinct never auto-acts (C-B6); the C-OB1 person gate
