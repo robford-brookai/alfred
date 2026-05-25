@@ -703,7 +703,32 @@ export function registerPhoneRoutes(): void {
     },
   );
 
-  // ── Inbound SMS routing (called by SaaS twilio/sms webhook) ──────────────
+  // ── Inbound SMS routing (LEGACY — Hermes' twilio adapter owns this now) ──
+  //
+  // 2026-05-25 hard switch (Lane I, SMS-via-Hermes campaign). The SMS
+  // inbound flow used to be: SaaS Twilio webhook → ctrl-api → openclaw
+  // chat-completion → ship reply via SaaS. That implementation predates
+  // the unified Hermes channel surface (`/api/v1/channels/sms/*` —
+  // packages/ctrl/src/api/routes/sms.ts) and the one-Alfred UX promise
+  // (see docs/design/one-alfred.md): Sir must feel he's talking to ONE
+  // Alfred across every channel, with full continuity, not a per-channel
+  // mini-bot stitching half-context together.
+  //
+  // The new path: Hermes' own twilio platform adapter is the inbound
+  // listener. With the per-profile .env populated by /channels/sms/PUT
+  // (Lane I), Twilio webhooks now hit Hermes directly — same as Telegram
+  // and Slack — and outbound replies travel through /api/v1/alfred-deliver
+  // so the alfred_journal records the entire exchange.
+  //
+  // This route is kept for ONE RELEASE so the SaaS twilio/sms webhook
+  // doesn't 404 if it hasn't been re-pointed yet. Behaviour: ingest the
+  // event into the stream pipeline (for audit + later vault enrichment),
+  // warn-log so we can detect leftover callers, and return 200 so the
+  // SaaS proxy doesn't retry-storm. No LLM completion, no Twilio reply —
+  // Hermes owns the reply path now.
+  //
+  // Same one-release deprecation pattern as
+  // `/api/v1/notifications` → `/api/v1/alfred-deliver` (notifications.ts).
   addRoute("POST", "/api/v1/phone/sms/inbound", async ({ res, body }) => {
     const b = body as
       | { from?: string; to?: string; body?: string; messageSid?: string }
@@ -716,87 +741,44 @@ export function registerPhoneRoutes(): void {
     const text = (b.body ?? "").trim();
     const messageSid = b.messageSid ?? `${from}-${Date.now()}`;
 
-    const authorized = readAuthorizedNumbers().map(normaliseNumber);
-    const normalisedFrom = normaliseNumber(from);
-    let isAuthorized = authorized.includes(normalisedFrom);
+    console.warn(
+      "[phone/sms/inbound] LEGACY route hit (SaaS webhook not yet re-pointed at Hermes twilio adapter)",
+    );
 
-    // Bootstrap-trust: if the authorized list is empty, treat the first
-    // inbound SMS as the tenant owner's number and auto-add it. The
-    // assumption holds because the tenant's Twilio number is freshly
-    // provisioned and known only to the owner (given via dashboard).
-    // Also prevents the ugly UX where a brand-new tenant has to hand-
-    // configure trust before their first SMS ever gets a reply.
-    //
-    // SaaS-side already filters spam numbers before proxying here, so the
-    // auto-trust window is bounded to real human senders.
-    if (!isAuthorized && authorized.length === 0) {
-      writeAuthorizedNumbers([normalisedFrom]);
-      console.log(
-        "[phone/sms] bootstrap-trusted first sender %s (empty authorized list)",
-        normalisedFrom,
-      );
-      isAuthorized = true;
-    }
-
-    if (!isAuthorized) {
-      // Stream pipeline. Bridge to the zero-LLM template path so hourly
-      // enrichment can later turn this into vault context.
-      const event = {
-        id: cryptoRandomId(),
-        stream_id: "sms-inbound",
-        stream_type: "sms",
-        received_at: new Date().toISOString(),
-        source_ref: messageSid,
-        raw: { from, to, body: text, direction: "inbound" },
-        summary: `SMS from ${from}: ${text.slice(0, 80)}`,
-      };
-      await ingestStreamEvent(event);
-      sendJson(res, 200, { status: "stream-ingested", event_id: event.id });
-      return;
-    }
-
-    // Authorised → openclaw chat completion → ship reply via Twilio.
-    const ts = new Date().toISOString();
-    const userTurn: SmsTurn = { role: "user", content: text, ts };
-    const priorTurns = readSmsThread(from, 20);
-    appendSmsTurn(from, userTurn);
-
-    let reply = "";
-    try {
-      reply = await openclawChatCompletion({
-        model: readMainAgentModel(),
-        messages: [
-          { role: "system", content: buildSmsSystemPrompt() },
-          ...priorTurns.map((t) => ({ role: t.role, content: t.content })),
-          { role: "user", content: text },
-        ],
-        stream: false,
-      });
-    } catch (err: any) {
-      console.error("[phone/sms] chat completion failed", err);
-      // Even on failure, persist a placeholder so we don't lose the user turn.
-      sendJson(res, 502, { status: "completion-failed", error: err?.message });
-      return;
-    }
-
-    appendSmsTurn(from, {
-      role: "assistant",
-      content: reply,
-      ts: new Date().toISOString(),
+    const event = {
+      id: cryptoRandomId(),
+      stream_id: "sms-inbound",
+      stream_type: "sms",
+      received_at: new Date().toISOString(),
+      source_ref: messageSid,
+      raw: { from, to, body: text, direction: "inbound", path: "legacy" },
+      summary: `SMS from ${from}: ${text.slice(0, 80)}`,
+    };
+    await ingestStreamEvent(event);
+    sendJson(res, 200, {
+      status: "stream-ingested",
+      event_id: event.id,
+      deprecated: true,
+      replacement: "Hermes twilio adapter — see /api/v1/channels/sms/*",
     });
-
-    const ship = await shipSmsViaSaas({ to: from, body: reply });
-    void auditEchoSmsTurn(from, text, reply);
-
-    if (!ship.ok) {
-      console.error("[phone/sms] ship failed", ship.error);
-      sendJson(res, 502, { status: "ship-failed", error: ship.error, reply });
-      return;
-    }
-    sendJson(res, 200, { status: "replied", reply, sid: ship.sid });
   });
 
-  // ── Outbound SMS (agent-initiated) ───────────────────────────────────────
+  // ── Outbound SMS (LEGACY — agent-initiated; forwards to alfred-deliver) ──
+  //
+  // 2026-05-25 hard switch (Lane I, SMS-via-Hermes campaign). The outbound
+  // SMS surface used to be: agent → POST /api/v1/phone/sms → SaaS
+  // /api/internal/twilio/send-sms → Twilio. That bypassed alfred_journal,
+  // so an outbound text NEVER appeared in Sir's "one-Alfred" continuity
+  // (the journal is the source of truth main reads on every inbound).
+  //
+  // The new path: agent → POST /api/v1/alfred-deliver { channel: "sms", to }
+  // → smsSend() (packages/ctrl/src/api/routes/sms.ts) → Twilio. The journal
+  // is written BEFORE the send; on success it's marked delivered with the
+  // exact bytes Sir saw.
+  //
+  // This route is kept for ONE RELEASE so any in-flight agent code calling
+  // /api/v1/phone/sms keeps working unmodified. Body shape + response
+  // shape preserved.
   addRoute("POST", "/api/v1/phone/sms", async ({ res, body }) => {
     const b = body as { to?: unknown; body?: unknown } | undefined;
     if (!b || typeof b.to !== "string" || typeof b.body !== "string") {
@@ -808,31 +790,55 @@ export function registerPhoneRoutes(): void {
       throw new ValidationError("to and body must be non-empty");
     }
 
-    const ship = await shipSmsViaSaas({ to, body: text });
-    if (!ship.ok) {
-      sendJson(res, 502, { status: "ship-failed", error: ship.error });
+    // Forward to /api/v1/alfred-deliver (same-process self-call) so the
+    // journal records the outbound and smsSend() does the actual Twilio
+    // POST. Mirrors the notifications.ts → alfred-deliver forwarder.
+    const aas = process.env.AAS_API_KEY || "";
+    const port = process.env.AAS_PORT || "3100";
+    let resp: Response;
+    try {
+      resp = await fetch(`http://127.0.0.1:${port}/api/v1/alfred-deliver`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${aas}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: text,
+          channel: "sms",
+          to,
+          source_kind: "phone-sms-legacy",
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (err: any) {
+      sendJson(res, 502, {
+        status: "ship-failed",
+        error: `alfred-deliver unreachable: ${err?.message ?? String(err)}`,
+      });
       return;
     }
-
-    // Log outbound to the streams pipeline for vault visibility + dashboard.
-    const meta = readInstanceMeta();
-    const event = {
-      id: cryptoRandomId(),
-      stream_id: "sms-outbound",
-      stream_type: "sms",
-      received_at: new Date().toISOString(),
-      source_ref: ship.sid ?? cryptoRandomId(),
-      raw: {
-        from: meta?.phoneNumber ?? "",
-        to,
-        body: text,
-        direction: "outbound",
-      },
-      summary: `SMS to ${to}: ${text.slice(0, 80)}`,
-    };
-    await ingestStreamEvent(event);
-
-    sendJson(res, 200, { status: "sent", sid: ship.sid });
+    const respText = await resp.text().catch(() => "");
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = JSON.parse(respText);
+    } catch {
+      /* leave parsed = {} */
+    }
+    if (!resp.ok || !parsed.ok) {
+      sendJson(res, resp.status || 502, {
+        status: "ship-failed",
+        error: (parsed.error as string) ?? `alfred-deliver returned ${resp.status}`,
+      });
+      return;
+    }
+    // alfred-deliver doesn't surface the Twilio message sid in its happy
+    // path; preserve the legacy { status, sid } shape with journal_id as a
+    // stand-in so callers grepping for sid don't crash on undefined.
+    sendJson(res, 200, {
+      status: "sent",
+      sid: (parsed.journal_id as string) ?? null,
+    });
   });
 
   // ── Outbound call (agent-initiated) ──────────────────────────────────────
