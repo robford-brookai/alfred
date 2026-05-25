@@ -145,6 +145,9 @@ mock.module("../src/api/helpers.js", {
     validateServiceName: () => undefined,
     ALFRED_CMD: ["alfred"],
     OPENCLAW_CMD: ["node", "openclaw.mjs"],
+    OPENCLAW_CONTAINER: "hermes",
+    HERMES_CMD: ["hermes"],
+    HERMES_CONTAINER: "hermes",
     COMPOSE_DIR: "/opt/alfred/compose",
   },
 });

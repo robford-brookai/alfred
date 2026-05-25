@@ -10,8 +10,9 @@
 # restarts will hit Let's Encrypt rate limits.
 #
 # DNS: before `docker compose up -d`, point these A-records at the VM's
-# public IP — `@` (apex), `plane`, `sure`, `vault`, `mcp`, `sms`. Caddy
-# self-heals ACME on retry, so a stale record only delays the first cert.
+# public IP — `@` (apex), `plane`, `sure`, `vault`, `mcp`, `sms`, `voice`.
+# Caddy self-heals ACME on retry, so a stale record only delays the
+# first cert.
 
 {
 	email {$ACME_EMAIL}
@@ -65,4 +66,17 @@ mcp.{$DOMAIN} {
 sms.{$DOMAIN} {
 	encode zstd gzip
 	reverse_proxy hermes:8080
+}
+
+# Voice — Twilio Media Streams WebSocket endpoint for the voice-bridge.
+# Hermes has no native phone-call adapter (upstream issue #409), so
+# realtime audio bridges through a separate service that translates
+# Twilio mulaw <-> OpenAI gpt-realtime. The bridge's :9000 listener
+# accepts WSS upgrades on /voice/<tenantId>?sig=<hmac>. In the Twilio
+# console, set the number's "A CALL COMES IN" webhook to a TwiML <Stream>
+# pointing at `wss://voice.{$DOMAIN}/voice/<id>?sig=...`. Caddy auto-issues
+# the LE cert + handles the WS upgrade transparently.
+voice.{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy voice-bridge:9000
 }
