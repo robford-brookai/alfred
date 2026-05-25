@@ -1153,10 +1153,11 @@ def _dedupe_truncated_persons(
     vice versa) with token-overlap ≥ 0.65, return the LONGER canonical
     name so the caller merges onto it instead of writing a duplicate.
 
-    Returns ``None`` when no truncation match exists. Live case:
-    ``Test U`` vs ``Test User`` → ``{david, szabo, st}``
-    vs ``{david, szabo, stuban}`` → overlap 2/3 = 0.667 ≥ 0.65, longer
-    name wins.
+    Returns ``None`` when no truncation match exists. Worked example:
+    ``Sam Test U`` (a truncated 3-token name) vs existing
+    ``Sam Test User`` → token sets ``{sam, test, u}`` and
+    ``{sam, test, user}``; intersection ``{sam, test}`` (size 2),
+    min-cardinality 3 → overlap 2/3 = 0.667 ≥ 0.65, the longer name wins.
     """
     cand_tokens = _person_tokens(candidate)
     if not cand_tokens:

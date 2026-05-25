@@ -11,7 +11,7 @@ Two helpers gate the person-write path inside
   0.65.
 
 These tests prove the filter rejects the live junk (Github
-Notifications, test@example.com, Test U ⊂ David
+Notifications, test@example.com, Sam Test U ⊂ David
 Szabo-Stuban) and accepts real humans (RJ Johnson).
 """
 from __future__ import annotations
@@ -68,13 +68,13 @@ def test_rejects_single_capitalized_token() -> None:
 
 def test_accepts_two_capitalized_tokens() -> None:
     """The live happy path — 'RJ Johnson', 'Dana Reyes', the hyphenated
-    'Test User'.
+    'Sam Test User'.
     """
     assert _is_plausible_human_name("RJ Johnson") is True
     assert _is_plausible_human_name("Dana Reyes") is True
-    # 'Test User' tokenises to {David, Szabo, Stuban} via the
+    # 'Sam Test User' tokenises to {Sam, Test, User} via the
     # hyphen → multiple cap tokens.
-    assert _is_plausible_human_name("Test User") is True
+    assert _is_plausible_human_name("Sam Test User") is True
 
 
 def test_accepts_unicode_diacritic_name() -> None:
@@ -138,12 +138,12 @@ def test_is_capitalized_token_unicode_uppercase() -> None:
 
 
 def test_dedupe_returns_existing_when_candidate_is_prefix() -> None:
-    """'Test U' is a tokenwise subset of 'Test User' →
+    """'Sam Test U' is a tokenwise subset of 'Sam Test User' →
     merge onto the longer existing name.
     """
-    existing = ["Test User", "Sam Lee"]
-    canonical = _dedupe_truncated_persons(existing, "Test U")
-    assert canonical == "Test User"
+    existing = ["Sam Test User", "Sam Lee"]
+    canonical = _dedupe_truncated_persons(existing, "Sam Test U")
+    assert canonical == "Sam Test User"
 
 
 def test_dedupe_returns_candidate_when_it_is_longer() -> None:
@@ -151,10 +151,10 @@ def test_dedupe_returns_candidate_when_it_is_longer() -> None:
     The candidate wins (new write proceeds; merge logic handles the
     older record).
     """
-    existing = ["Test U"]
-    canonical = _dedupe_truncated_persons(existing, "Test User")
+    existing = ["Sam Test U"]
+    canonical = _dedupe_truncated_persons(existing, "Sam Test User")
     # Candidate name itself is returned; caller can then patch existing.
-    assert canonical == "Test User"
+    assert canonical == "Sam Test User"
 
 
 def test_dedupe_returns_none_for_unrelated() -> None:
@@ -261,14 +261,14 @@ def test_create_or_merge_entity_writes_for_real_human() -> None:
 
 
 def test_create_or_merge_entity_collapses_truncated_person() -> None:
-    """The existing cache already has 'Test User'. A second write
-    for 'Test U' must be merged onto the existing record (no
+    """The existing cache already has 'Sam Test User'. A second write
+    for 'Sam Test U' must be merged onto the existing record (no
     duplicate written, backlink unioned via the existing-path branch).
     """
     fake = _FakeVaultClient()
     existing_fm: dict[str, dict[str, Any]] = {
-        "david szabo-stuban": {
-            "name": "Test User",
+        "sam test user": {
+            "name": "Sam Test User",
             "related": ["[[matter/old]]"],
         },
     }
@@ -277,7 +277,7 @@ def test_create_or_merge_entity_collapses_truncated_person() -> None:
         return await _create_or_merge_entity(
             fake,  # type: ignore[arg-type]
             record_type="person",
-            name="Test U",
+            name="Sam Test U",
             backlinks=["[[matter/new]]"],
             description="Trunc.",
             existing_fm=existing_fm,
@@ -285,12 +285,12 @@ def test_create_or_merge_entity_collapses_truncated_person() -> None:
 
     outcome = _run(_go)
 
-    # Must NOT write a duplicate 'Test U' record.
+    # Must NOT write a duplicate 'Sam Test U' record.
     assert fake.written == []
     # Should have merged onto the canonical name → patch fired.
     assert outcome == "merged"
-    assert any("Test User" in p[0] for p in fake.patched), (
-        f"expected a patch onto Test User; got {fake.patched}"
+    assert any("Sam Test User" in p[0] for p in fake.patched), (
+        f"expected a patch onto Sam Test User; got {fake.patched}"
     )
 
 
