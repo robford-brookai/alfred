@@ -444,5 +444,5 @@ long tail >90 days), **`ingest.db`** (raw inbound stream, 7-day TTL).
 
 ## License
 
-[MIT](LICENSE) · Built by [Test User](https://screenlessdad.com).
+[MIT](LICENSE) · Built by [David Szabo-Stuban](https://screenlessdad.com).
 </content>

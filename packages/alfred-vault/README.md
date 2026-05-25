@@ -173,4 +173,4 @@ Early-stage, actively developed. Issues, PRs, and ideas welcome.
 
 ## License
 
-[MIT](LICENSE) · Built by [Test User](https://screenlessdad.com)
+[MIT](LICENSE) · Built by [David Szabo-Stuban](https://screenlessdad.com)
