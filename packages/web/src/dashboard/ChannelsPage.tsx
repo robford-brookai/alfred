@@ -27,6 +27,10 @@ import {
   setSlackTokens,
   sendSlackTest,
   disconnectSlack,
+  getSmsChannelStatus,
+  setSmsCredentials,
+  sendSmsTest,
+  disconnectSms,
 } from "wasp/client/operations";
 import { Frame } from "../client/components/ab/Frame";
 import {
@@ -44,6 +48,12 @@ import {
   isProbablyValidSlackAppToken,
   type SlackStatus,
 } from "./slackCardCore";
+import {
+  deriveSmsCardState,
+  isProbablyValidTwilioAccountSid,
+  isProbablyValidTwilioAuthToken,
+  type SmsStatus,
+} from "./smsCardCore";
 
 // F57/C14 — the email card reads the live ctrl-api status, not a phantom
 // Instance row. `inbox_address` is only present once `configured`.
@@ -302,15 +312,26 @@ export default function ChannelsPage() {
             )}
           </ChannelCard>
 
-          {/* Phone — F58/C15: BYO-number provisioning + key fix. */}
+          {/* Phone — split into two sections (Lane III SMS, 2026-05-25):
+              the SMS half is the new live SmsCard backed by ctrl-api
+              /api/v1/channels/sms/*; the Voice half is the existing F58/C15
+              BYO-Twilio provisioning + authorised-callers form, untouched.
+              A "SMS" / "Voice" divider keeps the card from reading as one
+              giant form. Phase 2 will pull Voice out of this card entirely. */}
           <ChannelCard
             name="Phone"
-            address={phoneNumber || "Not yet provisioned"}
-            note="Call me from any number you've authorised."
+            address={phoneNumber || "SMS or voice — pick a section below"}
+            note="SMS replies in the butler voice; voice rings through Twilio."
             status={phoneNumber ? "active" : "available"}
           >
+            {/* ---------- SMS section (NEW) ---------- */}
+            <SectionDivider label="SMS" />
+            <SmsSection />
+
+            {/* ---------- Voice section (existing, untouched) ---------- */}
+            <SectionDivider label="Voice" />
             {!phoneNumber && (
-              <div className="mt-5 space-y-3">
+              <div className="mt-3 space-y-3">
                 {!setupOpen ? (
                   <button
                     onClick={() => setSetupOpen(true)}
@@ -386,7 +407,7 @@ export default function ChannelsPage() {
               </div>
             )}
             {phoneNumber && (
-              <div className="mt-5 space-y-3">
+              <div className="mt-3 space-y-3">
                 <div
                   className="font-mono text-[10px] uppercase tracking-[0.22em]"
                   style={{ color: "var(--marginalia)" }}
@@ -1367,5 +1388,380 @@ function SlackCard() {
         </div>
       )}
     </ChannelCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Lane III (SMS, 2026-05-25) — SMS section inside the Phone card.
+//
+// Visually nested under a "SMS" SectionDivider so it co-exists with the
+// existing Voice section (untouched). Mirrors the SlackCard pattern: paste
+// 3 fields (Account SID + Auth Token + phone number) → Save → connected
+// pill → optional allowed-users fold-out. State derivation lives in
+// smsCardCore.ts; this component is the React surface + form plumbing.
+// ---------------------------------------------------------------------------
+
+function SectionDivider({ label }: { label: string }) {
+  return (
+    <div className="mt-6 mb-2 flex items-center gap-3">
+      <span
+        className="font-mono text-[10px] uppercase tracking-[0.28em] font-extrabold"
+        style={{ color: "var(--brass)" }}
+      >
+        {label}
+      </span>
+      <span className="flex-1 h-px" style={{ background: "var(--rule)" }} />
+    </div>
+  );
+}
+
+function SmsSection() {
+  const { data: statusData, refetch } = useQuery(
+    getSmsChannelStatus,
+    undefined,
+    { retry: false },
+  );
+  const status = (statusData as SmsStatus | undefined) ?? null;
+  const card = deriveSmsCardState({ status });
+
+  // Setup-state form
+  const [accountSid, setAccountSid] = useState("");
+  const [authToken, setAuthToken] = useState("");
+  const [smsPhoneNumber, setSmsPhoneNumber] = useState("");
+  const [smsAllowedUsers, setSmsAllowedUsers] = useState("");
+  const [showSecrets, setShowSecrets] = useState(false);
+  const [showOptions, setShowOptions] = useState(false);
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+
+  // Test-message state.
+  const [testBusy, setTestBusy] = useState(false);
+  const [testMsg, setTestMsg] = useState<
+    { kind: "ok" | "err"; text: string } | null
+  >(null);
+
+  // Disconnect.
+  const [discBusy, setDiscBusy] = useState(false);
+
+  const trimmedSid = accountSid.trim();
+  const trimmedToken = authToken.trim();
+  const trimmedNumber = smsPhoneNumber.trim();
+  const sidValid = isProbablyValidTwilioAccountSid(trimmedSid);
+  const tokenValid = isProbablyValidTwilioAuthToken(trimmedToken);
+  const numberValid = /^\+[1-9]\d{6,14}$/.test(trimmedNumber);
+  const formValid = sidValid && tokenValid && numberValid;
+  const sidHint =
+    trimmedSid.length > 0 && !sidValid
+      ? "Account SID must look like AC + 32 hex chars."
+      : null;
+  const tokenHint =
+    trimmedToken.length > 0 && !tokenValid
+      ? "Auth token is 32 hex chars."
+      : null;
+  const numberHint =
+    trimmedNumber.length > 0 && !numberValid
+      ? "Phone number must be E.164 (e.g. +15550100)."
+      : null;
+
+  async function save() {
+    if (!formValid) return;
+    setSaveBusy(true);
+    setSaveErr(null);
+    try {
+      await setSmsCredentials({
+        account_sid: trimmedSid,
+        auth_token: trimmedToken,
+        phone_number: trimmedNumber,
+        allowed_users: smsAllowedUsers.trim() || undefined,
+      });
+      setAccountSid("");
+      setAuthToken("");
+      setSmsPhoneNumber("");
+      setSmsAllowedUsers("");
+      refetch();
+    } catch (e: any) {
+      setSaveErr(
+        e?.message ?? e?.data?.error ?? "Couldn't save the credentials.",
+      );
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  async function sendTest() {
+    if (testBusy) return;
+    setTestBusy(true);
+    setTestMsg(null);
+    try {
+      const r: any = await sendSmsTest({});
+      if (r?.ok) {
+        setTestMsg({
+          kind: "ok",
+          text: r?.sid ? `Sent (sid ${r.sid}).` : "Sent — check your phone.",
+        });
+      } else {
+        setTestMsg({
+          kind: "err",
+          text: r?.error ?? "Twilio refused the message.",
+        });
+      }
+    } catch (e: any) {
+      setTestMsg({
+        kind: "err",
+        text: e?.message ?? e?.data?.error ?? "Couldn't reach Twilio.",
+      });
+    } finally {
+      setTestBusy(false);
+      setTimeout(() => setTestMsg(null), 6000);
+    }
+  }
+
+  async function disconnect() {
+    if (discBusy) return;
+    setDiscBusy(true);
+    try {
+      await disconnectSms({});
+      refetch();
+    } catch (e) {
+      console.error("sms disconnect failed", e);
+    } finally {
+      setDiscBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      {card.state === "unconfigured" && (
+        <div className="mt-3 space-y-3">
+          <p
+            className="font-body italic text-[13px]"
+            style={{ color: "var(--marginalia)" }}
+          >
+            {card.description}
+          </p>
+
+          <div className="space-y-2">
+            <div
+              className="font-mono text-[10px] uppercase tracking-[0.22em]"
+              style={{ color: "var(--marginalia)" }}
+            >
+              Twilio credentials
+            </div>
+            <div className="flex gap-2 items-baseline">
+              <input
+                type={showSecrets ? "text" : "password"}
+                value={accountSid}
+                onChange={(e) => setAccountSid(e.target.value)}
+                placeholder="Account SID (AC…)"
+                className="flex-1 bg-transparent border border-rule px-2 py-1 font-mono text-[12px]"
+              />
+              <button
+                type="button"
+                onClick={() => setShowSecrets((s) => !s)}
+                className="btn-link"
+              >
+                {showSecrets ? "Hide" : "Show"}
+              </button>
+            </div>
+            {sidHint && (
+              <p
+                className="font-body italic text-[12px]"
+                style={{ color: "var(--marginalia)" }}
+              >
+                {sidHint}
+              </p>
+            )}
+            <input
+              type={showSecrets ? "text" : "password"}
+              value={authToken}
+              onChange={(e) => setAuthToken(e.target.value)}
+              placeholder="Auth Token"
+              className="w-full bg-transparent border border-rule px-2 py-1 font-mono text-[12px]"
+            />
+            {tokenHint && (
+              <p
+                className="font-body italic text-[12px]"
+                style={{ color: "var(--marginalia)" }}
+              >
+                {tokenHint}
+              </p>
+            )}
+            <input
+              type="text"
+              value={smsPhoneNumber}
+              onChange={(e) => setSmsPhoneNumber(e.target.value)}
+              placeholder="Twilio phone number (+15550100)"
+              className="w-full bg-transparent border border-rule px-2 py-1 font-mono text-[12px]"
+            />
+            {numberHint && (
+              <p
+                className="font-body italic text-[12px]"
+                style={{ color: "var(--marginalia)" }}
+              >
+                {numberHint}
+              </p>
+            )}
+
+            {/* Phase-2 options — allowed-users allowlist, folded by default */}
+            <button
+              type="button"
+              onClick={() => setShowOptions((s) => !s)}
+              className="btn-link text-[11px]"
+            >
+              {showOptions ? "Hide options" : "Options (allowed senders)"}
+            </button>
+            {showOptions && (
+              <div className="space-y-2 border-l border-rule/40 pl-3">
+                <input
+                  type="text"
+                  value={smsAllowedUsers}
+                  onChange={(e) => setSmsAllowedUsers(e.target.value)}
+                  placeholder="SMS_ALLOWED_USERS — comma-separated E.164 numbers (empty = anyone)"
+                  className="w-full bg-transparent border border-rule px-2 py-1 font-mono text-[11px]"
+                />
+              </div>
+            )}
+
+            <div className="flex gap-3 items-baseline">
+              <button
+                onClick={save}
+                disabled={saveBusy || !formValid}
+                className="btn-ghost"
+              >
+                {saveBusy ? "…" : "Save credentials"}
+              </button>
+            </div>
+            {saveErr && (
+              <p
+                className="font-body italic text-[13px]"
+                style={{ color: "var(--brass)" }}
+              >
+                {saveErr}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {card.state === "configured_starting" && (
+        <div className="mt-3 flex items-baseline gap-2">
+          <span
+            className="font-mono text-[12px] animate-pulse"
+            style={{ color: "var(--marginalia)" }}
+          >
+            ●
+          </span>
+          <p
+            className="font-body italic text-[13px]"
+            style={{ color: "var(--marginalia)" }}
+          >
+            {card.description}
+          </p>
+        </div>
+      )}
+
+      {card.state === "configured_running" && (
+        <div className="mt-3 space-y-3">
+          <p
+            className="font-mono text-[12px]"
+            style={{ color: "var(--ink)" }}
+          >
+            {card.heading}
+          </p>
+          <p
+            className="font-body italic text-[13px]"
+            style={{ color: "var(--marginalia)" }}
+          >
+            {card.description}
+          </p>
+          {card.accountSidMasked && (
+            <p
+              className="font-mono text-[11px]"
+              style={{ color: "var(--marginalia)" }}
+            >
+              Account SID: {card.accountSidMasked}
+            </p>
+          )}
+
+          {/* Allowed-senders panel — fold-out, sourced from status */}
+          <div className="space-y-2 border-l border-rule/40 pl-3">
+            <div
+              className="font-mono text-[10px] uppercase tracking-[0.22em]"
+              style={{ color: "var(--marginalia)" }}
+            >
+              Allowed senders
+            </div>
+            {status?.allowed_users ? (
+              <p
+                className="font-mono text-[12px]"
+                style={{ color: "var(--ink)" }}
+              >
+                {status.allowed_users}
+              </p>
+            ) : (
+              <p
+                className="font-body italic text-[12px]"
+                style={{ color: "var(--marginalia)" }}
+              >
+                Anyone may text {card.phoneNumber ?? "the bot"}.
+              </p>
+            )}
+          </div>
+
+          <div className="flex flex-wrap gap-3 items-baseline pt-1">
+            <button
+              onClick={sendTest}
+              disabled={testBusy}
+              className="btn-ghost"
+            >
+              {testBusy ? "…" : "Send test SMS"}
+            </button>
+            <button
+              onClick={disconnect}
+              disabled={discBusy}
+              className="btn-link"
+            >
+              Disconnect SMS
+            </button>
+          </div>
+
+          {testMsg && (
+            <p
+              className="font-body italic text-[12px]"
+              style={{
+                color:
+                  testMsg.kind === "ok" ? "var(--marginalia)" : "var(--brass)",
+              }}
+            >
+              {testMsg.kind === "ok" ? "✓ " : "✗ "}
+              {testMsg.text}
+            </p>
+          )}
+        </div>
+      )}
+
+      {card.state === "error" && (
+        <div className="mt-3 space-y-3">
+          <p
+            className="font-body italic text-[13px]"
+            style={{ color: "var(--brass)" }}
+          >
+            {card.description}
+          </p>
+          <div className="flex gap-3 items-baseline">
+            <button onClick={() => refetch()} className="btn-ghost">
+              Try again
+            </button>
+            <button
+              onClick={disconnect}
+              disabled={discBusy}
+              className="btn-link"
+            >
+              Disconnect
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

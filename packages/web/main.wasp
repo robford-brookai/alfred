@@ -773,6 +773,33 @@ action disconnectSlack {
   entities: []
 }
 
+// Lane III (SMS) — SMS channel on /channels. Five ops backed by ctrl-api
+// /api/v1/channels/sms/*. Mirrors the Slack op set; same shape.
+query getSmsChannelStatus {
+  fn: import { getSmsChannelStatus } from "@src/dashboard/operations",
+  entities: []
+}
+
+action setSmsCredentials {
+  fn: import { setSmsCredentials } from "@src/dashboard/operations",
+  entities: []
+}
+
+action sendSmsTest {
+  fn: import { sendSmsTest } from "@src/dashboard/operations",
+  entities: []
+}
+
+action disconnectSms {
+  fn: import { disconnectSms } from "@src/dashboard/operations",
+  entities: []
+}
+
+query getSmsAuthorizedUsers {
+  fn: import { getSmsAuthorizedUsers } from "@src/dashboard/operations",
+  entities: []
+}
+
 query getAgentConfig {
   fn: import { getAgentConfig } from "@src/dashboard/operations",
   entities: []
