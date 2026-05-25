@@ -800,6 +800,15 @@ query getSmsAuthorizedUsers {
   entities: []
 }
 
+// Lane III (voice) — read-only voice channel status. Backed by ctrl-api
+// /api/v1/channels/voice/status (Lane I). Voice has no operator-facing
+// settings (reuses Twilio creds from SMS), so this query is the only
+// Wasp op the VoiceSection card needs.
+query getVoiceChannelStatus {
+  fn: import { getVoiceChannelStatus } from "@src/dashboard/operations",
+  entities: []
+}
+
 query getAgentConfig {
   fn: import { getAgentConfig } from "@src/dashboard/operations",
   entities: []

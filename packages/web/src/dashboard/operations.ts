@@ -293,6 +293,21 @@ export const getSmsChannelStatus = async (
   });
 };
 
+// Lane III (voice, 2026-05-25) — voice channel on /channels.
+// Read-only status query backed by ctrl-api /api/v1/channels/voice/status
+// (Lane I). Voice has no operator-facing settings of its own — it reuses
+// the Twilio credentials configured by setSmsCredentials above — so the
+// status query is the only Wasp op the card needs.
+export const getVoiceChannelStatus = async (
+  _args: unknown,
+  context: any,
+) => {
+  const instance = await getUserInstance(context);
+  return proxyToTenant(instance, {
+    path: "/api/v1/channels/voice/status",
+  });
+};
+
 export const setSmsCredentials = async (
   args: {
     account_sid: string;
