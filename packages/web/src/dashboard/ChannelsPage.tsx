@@ -31,6 +31,7 @@ import {
   setSmsCredentials,
   sendSmsTest,
   disconnectSms,
+  getVoiceChannelStatus,
 } from "wasp/client/operations";
 import { Frame } from "../client/components/ab/Frame";
 import {
@@ -54,6 +55,10 @@ import {
   isProbablyValidTwilioAuthToken,
   type SmsStatus,
 } from "./smsCardCore";
+import {
+  deriveVoiceCardState,
+  type VoiceStatus,
+} from "./voiceCardCore";
 
 // F57/C14 — the email card reads the live ctrl-api status, not a phantom
 // Instance row. `inbox_address` is only present once `configured`.
@@ -328,135 +333,13 @@ export default function ChannelsPage() {
             <SectionDivider label="SMS" />
             <SmsSection />
 
-            {/* ---------- Voice section (existing, untouched) ---------- */}
+            {/* ---------- Voice section (Lane III voice, 2026-05-25) ----------
+                Voice is now a real compose service (voice-bridge) — see
+                Lane I + Lane II. The card is read-only because voice
+                reuses Twilio credentials from the SMS section above.
+                Surfaces deploy-readiness only; no operator settings. */}
             <SectionDivider label="Voice" />
-            {!phoneNumber && (
-              <div className="mt-3 space-y-3">
-                {!setupOpen ? (
-                  <button
-                    onClick={() => setSetupOpen(true)}
-                    className="btn-ghost"
-                  >
-                    Set up phone →
-                  </button>
-                ) : (
-                  <div className="space-y-3">
-                    <input
-                      type="password"
-                      value={openaiKey}
-                      onChange={(e) => setOpenaiKey(e.target.value)}
-                      placeholder="OpenAI API key (sk-…)"
-                      className="w-full bg-transparent border border-rule px-2 py-1 font-mono text-[12px]"
-                    />
-                    <input
-                      value={twilioSid}
-                      onChange={(e) => setTwilioSid(e.target.value)}
-                      placeholder="Twilio Account SID (AC…)"
-                      className="w-full bg-transparent border border-rule px-2 py-1 font-mono text-[12px]"
-                    />
-                    <input
-                      type="password"
-                      value={twilioToken}
-                      onChange={(e) => setTwilioToken(e.target.value)}
-                      placeholder="Twilio Auth Token"
-                      className="w-full bg-transparent border border-rule px-2 py-1 font-mono text-[12px]"
-                    />
-                    <input
-                      value={byoNumber}
-                      onChange={(e) => setByoNumber(e.target.value)}
-                      placeholder="Your Twilio number (+44 7700 900 188)"
-                      className="w-full bg-transparent border border-rule px-2 py-1 font-mono text-[12px]"
-                    />
-                    <p
-                      className="font-body italic text-[12px]"
-                      style={{ color: "var(--marginalia)" }}
-                    >
-                      Bring an existing Twilio number you own — purchasing new
-                      numbers isn't supported yet. Inbound calling also needs
-                      the voice-bridge, a separate step we're still wiring up.
-                    </p>
-                    <div className="flex gap-2 items-baseline">
-                      <button
-                        onClick={doProvisionPhone}
-                        disabled={setupBusy || !setupReady}
-                        className="btn-ghost"
-                      >
-                        {setupBusy ? "…" : "Provision"}
-                      </button>
-                      <button
-                        onClick={() => {
-                          setSetupOpen(false);
-                          setSetupError(null);
-                        }}
-                        disabled={setupBusy}
-                        className="btn-link"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                    {setupError && (
-                      <p
-                        className="font-body italic text-[13px]"
-                        style={{ color: "var(--brass)" }}
-                      >
-                        {setupError}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-            {phoneNumber && (
-              <div className="mt-3 space-y-3">
-                <div
-                  className="font-mono text-[10px] uppercase tracking-[0.22em]"
-                  style={{ color: "var(--marginalia)" }}
-                >
-                  Authorised callers
-                </div>
-                {authorized.length === 0 ? (
-                  <p
-                    className="font-body italic text-[13px]"
-                    style={{ color: "var(--marginalia)" }}
-                  >
-                    None yet.
-                  </p>
-                ) : (
-                  <ul className="space-y-1">
-                    {authorized.map((n) => (
-                      <li
-                        key={n}
-                        className="grid grid-cols-[1fr_auto] gap-3 font-mono text-[12px] items-baseline"
-                      >
-                        <span>{n}</span>
-                        <button
-                          onClick={() => removeNumber(n)}
-                          disabled={phoneBusy}
-                          className="btn-link"
-                        >
-                          Remove
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <div className="flex gap-2 items-baseline">
-                  <input
-                    value={newNumber}
-                    onChange={(e) => setNewNumber(e.target.value)}
-                    placeholder="+44 7700 900 188"
-                    className="flex-1 bg-transparent border border-rule px-2 py-1 font-mono text-[12px]"
-                  />
-                  <button
-                    onClick={addNumber}
-                    disabled={phoneBusy || !newNumber.trim()}
-                    className="btn-ghost"
-                  >
-                    Add
-                  </button>
-                </div>
-              </div>
-            )}
+            <VoiceSection />
           </ChannelCard>
 
           {/* Vexa */}
@@ -1761,6 +1644,78 @@ function SmsSection() {
             </button>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+// Lane III (voice, 2026-05-25) — Voice section inside the Phone card.
+//
+// Visually nested under a "Voice" SectionDivider below the SMS section
+// (voice depends on SMS — it reuses the same Twilio credentials).
+//
+// The card is **read-only**: voice has no operator-facing settings of
+// its own. Its job is to surface deploy-readiness — "is voice-bridge
+// deployed?", "is it running with the latest creds?", "is it healthy?"
+// — driven entirely by ctrl-api /api/v1/channels/voice/status (Lane I).
+// State derivation lives in voiceCardCore.ts; this component is just
+// the React surface that renders heading + description + pill.
+// ---------------------------------------------------------------------------
+
+function VoiceSection() {
+  const { data: statusData } = useQuery(
+    getVoiceChannelStatus,
+    undefined,
+    { retry: false },
+  );
+  const status = (statusData as VoiceStatus | undefined) ?? null;
+  const card = deriveVoiceCardState({ status });
+
+  const pillColor =
+    card.pill === "active"
+      ? "var(--ink)"
+      : card.pill === "starting"
+        ? "var(--marginalia)"
+        : card.pill === "error"
+          ? "var(--brass)"
+          : "var(--marginalia)";
+
+  return (
+    <div className="mt-3 space-y-3">
+      <div className="flex items-baseline gap-3">
+        <p
+          className="font-mono text-[12px]"
+          style={{ color: "var(--ink)" }}
+        >
+          {card.heading}
+        </p>
+        <span
+          className={
+            "font-mono text-[10px] uppercase tracking-[0.22em]" +
+            (card.pill === "starting" ? " animate-pulse" : "")
+          }
+          style={{ color: pillColor }}
+        >
+          {card.pill}
+        </span>
+      </div>
+
+      <p
+        className="font-body italic text-[13px]"
+        style={{
+          color: card.pill === "error" ? "var(--brass)" : "var(--marginalia)",
+        }}
+      >
+        {card.description}
+      </p>
+
+      {card.state === "configured_running" && card.callingNumber && (
+        <p
+          className="font-mono text-[11px]"
+          style={{ color: "var(--marginalia)" }}
+        >
+          Calling number: {card.callingNumber}
+        </p>
       )}
     </div>
   );
