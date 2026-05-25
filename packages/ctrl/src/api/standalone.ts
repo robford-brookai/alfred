@@ -15,7 +15,7 @@ if (fs.existsSync(envPath)) {
   }
 }
 
-import { setApiKey } from "./auth.js";
+import { setApiKey, setVoiceBridgeKey } from "./auth.js";
 import { createApiServer } from "./server.js";
 import { attachTerminalUpgrade } from "./routes/terminal.js";
 import { getStateDb, closeStateDb } from "../db/state.js";
@@ -31,6 +31,12 @@ if (!apiKey) {
 }
 
 setApiKey(apiKey);
+
+// Scoped Bearer for the voice-bridge sibling. Optional — when set, the
+// voice-bridge container can call the two allowlisted routes
+// (/api/v1/phone/voice-context, /api/v1/phone/transcript) WITHOUT being
+// granted access to anything else under /api/v1/*. See auth.ts.
+setVoiceBridgeKey(process.env.VOICE_BRIDGE_INTERNAL_TOKEN ?? "");
 
 // ---------------------------------------------------------------------------
 // Four-store boot (PLAN.md Part I).

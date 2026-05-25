@@ -19,9 +19,9 @@
 
 import { config } from "./config.js";
 
-/** Single-VM mode is engaged when AAS_API_KEY is set on the bridge env. */
+/** Single-VM mode is engaged by docker-compose on the monorepo build. */
 function singleVmMode(): boolean {
-  return Boolean(config.aasApiKey);
+  return config.singleVmMode;
 }
 
 /** Build the ctrl-api URL for the current deploy mode. */
@@ -32,9 +32,14 @@ function ctrlApiUrl(tenant: TenantContext, path: string): string {
   return `https://${tenant.tailscaleHost}:3100${path}`;
 }
 
-/** The Bearer token for the ctrl-api call. */
+/**
+ * Bearer token for the ctrl-api call. Single-VM mode presents this bridge's
+ * own internalToken — ctrl-api's auth.ts accepts it as a SCOPED bearer for
+ * the two allowlisted voice-bridge routes (and only those). Legacy SaaS
+ * mode forwards the per-tenant aasApiKey returned by the SaaS handshake.
+ */
 function ctrlApiAuthToken(tenant: TenantContext): string {
-  return singleVmMode() ? config.aasApiKey : tenant.aasApiKey;
+  return singleVmMode() ? config.internalToken : tenant.aasApiKey;
 }
 
 export interface TenantContext {
@@ -64,12 +69,15 @@ export async function fetchTenantContext(
   tenantId: string,
 ): Promise<TenantContext> {
   // Single-VM short-circuit: there's no SaaS to ask, so synthesize a
-  // TenantContext from env. tailscaleHost stays as a sentinel string ("local")
-  // because the URL builders above already key off singleVmMode().
+  // TenantContext from env. tailscaleHost stays as a sentinel string
+  // ("local") because the URL builders above already key off
+  // singleVmMode(). aasApiKey is empty here because the bridge does NOT
+  // hold the ctrl-api master key on the monorepo build — ctrlApiAuthToken()
+  // routes through internalToken instead (see auth.ts allowlist).
   if (singleVmMode()) {
     return {
       tailscaleHost: "local",
-      aasApiKey: config.aasApiKey,
+      aasApiKey: "",
       phoneNumber: config.ownerPhoneNumber || null,
     };
   }

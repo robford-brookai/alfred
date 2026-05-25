@@ -575,11 +575,17 @@ services:
       # the bridge calls back for tenant lookup, tool dispatch, and (in
       # Phase 3) alfred_journal writes on transcript ingest.
       SAAS_INTERNAL_URL: http://ctrl-api:3100
-      # Phase 4 single-VM short-circuit. When AAS_API_KEY is set the bridge
-      # skips the legacy SaaS tenant handshake and talks to ctrl-api at
-      # SAAS_INTERNAL_URL directly with this Bearer. TWILIO_PHONE_NUMBER is
-      # the calling identity surfaced to the realtime agent's system prompt.
-      AAS_API_KEY: ${AAS_API_KEY}
+      # Phase 4.1 single-VM short-circuit. When ENABLE_SINGLE_VM_MODE=1 the
+      # bridge skips the legacy SaaS tenant handshake and talks to ctrl-api
+      # at SAAS_INTERNAL_URL directly, presenting VOICE_BRIDGE_INTERNAL_TOKEN
+      # as a SCOPED Bearer. ctrl-api's auth.ts accepts that token only for
+      # the 2 voice-bridge routes (/voice-context GET, /transcript POST) —
+      # everything else under /api/v1/* refuses it. The bridge therefore
+      # does NOT hold the ctrl-api master key (AAS_API_KEY) — this is
+      # principle-of-least-privilege for a network-edge service that talks
+      # to Twilio audio + OpenAI Realtime WSS. TWILIO_PHONE_NUMBER is the
+      # calling identity surfaced to the realtime agent's system prompt.
+      ENABLE_SINGLE_VM_MODE: "1"
       TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER:-}
       MAX_CALL_SECONDS: "1800"
       IDLE_HANGUP_SECONDS: "60"

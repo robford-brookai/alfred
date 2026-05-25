@@ -24,14 +24,18 @@ export const config = {
   // with SaaS on the same VM, so this is reachable over the host network.
   saasInternalUrl: optional("SAAS_INTERNAL_URL", "https://alfred.black"),
 
-  // Single-VM mode. When set, the bridge skips the legacy SaaS tenant
-  // handshake (fetchTenantContext) and talks to the local ctrl-api directly
-  // for voice-context + tenant identity. Both env vars must be present to
-  // engage this path; if either is absent the SaaS-handshake fallback kicks
-  // in and the bridge tries https://<tailscaleHost>:3100 (legacy multi-
-  // tenant deploys). On the alfred-black single-VM build, docker-compose
-  // sets AAS_API_KEY + TWILIO_PHONE_NUMBER so this is always engaged.
-  aasApiKey: optional("AAS_API_KEY", ""),
+  // Single-VM mode. When ENABLE_SINGLE_VM_MODE=1 (set by docker-compose on
+  // the alfred-black monorepo build), the bridge skips the legacy SaaS
+  // tenant handshake (fetchTenantContext) and talks to the local ctrl-api
+  // directly via saasInternalUrl (= http://ctrl-api:3100). Authentication
+  // is the bridge's own internalToken — ctrl-api accepts it as a SCOPED
+  // Bearer for exactly the two routes this service needs
+  // (/voice-context GET + /transcript POST). See ctrl-api auth.ts
+  // VOICE_BRIDGE_ALLOWLIST.
+  //
+  // Earlier Phase-4 iterations wired AAS_API_KEY (the ctrl-api master key)
+  // into this container — a serious over-privilege. Removed in Phase 4.1.
+  singleVmMode: optional("ENABLE_SINGLE_VM_MODE", "") === "1",
   ownerPhoneNumber: optional("TWILIO_PHONE_NUMBER", ""),
 
   // OpenAI Realtime config. Default model tracks the latest GA slug.
