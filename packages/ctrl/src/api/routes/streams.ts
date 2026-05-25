@@ -4,6 +4,11 @@ import crypto from "node:crypto";
 import { addRoute } from "../server.js";
 import { sendJson, ValidationError, ConflictError, NotFoundError } from "../errors.js";
 import { getIngestDb } from "../../db/ingest.js";
+import { getStateDb } from "../../db/state.js";
+import {
+  appendJournal,
+  bindPrincipalChannel,
+} from "../../db/alfredJournal.js";
 import { ulid } from "../../db/ulid.js";
 
 // alfred-black named volumes (PLAN.md Part E) — env-configurable.
@@ -919,6 +924,48 @@ export function registerStreamRoutes(): void {
       streams[idx].last_event_at = event.received_at;
       streams[idx].event_count = (streams[idx].event_count || 0) + 1;
       saveStreamsMeta(streams);
+    }
+
+    // Phase 6a — OMI conversation transcripts cross-pollinate into
+    // alfred_journal so the Hermes one-alfred plugin sees them as
+    // cross-channel context on the next Telegram/Slack/SMS DM. The
+    // pre_llm_call hook fetches recent journal entries by principal_id,
+    // so a row here means "the last thing the principal said audibly
+    // around an OMI device" is in Alfred's context when Sir reaches
+    // out via any other channel. Failure is best-effort — the stream
+    // event is already persisted, never block ingest on the journal write.
+    if (event.stream_type === "omi-audio") {
+      try {
+        const db = getStateDb();
+        const meta = (event.metadata ?? {}) as Record<string, unknown>;
+        const uid = typeof meta.uid === "string" && meta.uid ? meta.uid : "unknown";
+        bindPrincipalChannel(db, "omi", uid, "owner");
+        // Prefer the explicit transcript field; fall back to summary.
+        const raw = (event.raw ?? {}) as Record<string, unknown>;
+        const text = typeof raw.text === "string" && raw.text.trim().length > 0
+          ? raw.text
+          : event.summary ?? "(OMI conversation, no text)";
+        appendJournal(db, {
+          channel: "omi",
+          chat_id: uid,
+          direction: "inbound", // Sir's voice → Alfred
+          message: text,
+          source_kind: "omi-audio-transcript",
+          source_ref: event.source_ref ?? event.id,
+          metadata: {
+            duration_seconds: meta.duration_seconds,
+            word_count: meta.word_count,
+            languages: meta.languages,
+            conversation_id: meta.conversation_id,
+            time_range: meta.time_range,
+          },
+        });
+      } catch (err) {
+        console.warn(
+          "[streams/ingest] omi → alfred_journal failed (non-blocking):",
+          err instanceof Error ? err.message : err,
+        );
+      }
     }
 
     sendJson(res, 201, { status: "ingested", event_id: event.id });
