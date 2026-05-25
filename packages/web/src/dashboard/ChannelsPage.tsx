@@ -32,6 +32,10 @@ import {
   sendSmsTest,
   disconnectSms,
   getVoiceChannelStatus,
+  getOmiChannelStatus,
+  setOmiGroqKey,
+  disconnectOmiGroqKey,
+  sendOmiTest,
 } from "wasp/client/operations";
 import { Frame } from "../client/components/ab/Frame";
 import {
@@ -59,6 +63,11 @@ import {
   deriveVoiceCardState,
   type VoiceStatus,
 } from "./voiceCardCore";
+import {
+  deriveOmiCardState,
+  isProbablyValidGroqKey,
+  type OmiStatus,
+} from "./omiCardCore";
 
 // F57/C14 — the email card reads the live ctrl-api status, not a phantom
 // Instance row. `inbox_address` is only present once `configured`.
@@ -362,19 +371,12 @@ export default function ChannelsPage() {
             </button>
           </ChannelCard>
 
-          {/* Omi — a wearable webhook stream source. F60: repointed off the
-              legacy /dashboard/streams page to the canonical Connections
-              surface, where the OMI catalog card + pairing modal live. */}
-          <ChannelCard
-            name="Omi"
-            address="Wearable audio stream"
-            note="Ambient voice. Wear it; I will keep up."
-            status="available"
-          >
-            <Link to="/connections" className="btn-ghost mt-4 inline-block">
-              Pair device →
-            </Link>
-          </ChannelCard>
+          {/* Omi — Phase-6b live card (Lane III, 2026-05-25). Surfaces the
+              4 OMI channel states (unconfigured / needs_groq_key /
+              configured / error). The Groq key is stored server-side in
+              Vaultwarden; alfred-learn reads it at transcription-activity
+              time. State derivation lives in omiCardCore. */}
+          <OmiCard />
 
           {/* Slack — Lane III: live card backed by ctrl-api, mirror of
               TelegramCard. The four visual states + workspace info come
@@ -1718,5 +1720,322 @@ function VoiceSection() {
         </p>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Lane III (OMI, 2026-05-25) — Phase-6b OMI channel card.
+//
+// State derivation lives in omiCardCore. The card has four visual states:
+//   • unconfigured    → "Pair OMI first" + link to /connections.
+//   • needs_groq_key  → single password-style paste box + Save.
+//   • configured      → webhook URL + copy + Test pipeline + Disconnect.
+//   • error           → verbatim error string + Try again.
+//
+// The Groq key is stored server-side in Vaultwarden via Lane I's PUT
+// /api/v1/channels/omi/groq-key; alfred-learn reads it at transcription
+// time. The card never reads the key back — `groq_key_present` is the
+// only signal it gets.
+// ---------------------------------------------------------------------------
+
+function OmiCard() {
+  const { data: statusData, refetch } = useQuery(
+    getOmiChannelStatus,
+    undefined,
+    { retry: false },
+  );
+  const status = (statusData as OmiStatus | undefined) ?? null;
+  const card = deriveOmiCardState({ status });
+
+  // Setup-state form
+  const [apiKey, setApiKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+
+  // Test-pipeline state.
+  const [testBusy, setTestBusy] = useState(false);
+  const [testMsg, setTestMsg] = useState<
+    { kind: "ok" | "err"; text: string } | null
+  >(null);
+
+  // Disconnect.
+  const [discBusy, setDiscBusy] = useState(false);
+
+  // One-click webhook copy.
+  const [copied, setCopied] = useState(false);
+
+  const trimmed = apiKey.trim();
+  const keyValid = isProbablyValidGroqKey(trimmed);
+  const keyHint =
+    trimmed.length > 0 && !keyValid
+      ? "Groq keys look like gsk_… with 20+ characters."
+      : null;
+
+  async function save() {
+    if (!keyValid) return;
+    setSaveBusy(true);
+    setSaveErr(null);
+    try {
+      await setOmiGroqKey({ api_key: trimmed });
+      setApiKey("");
+      refetch();
+    } catch (e: any) {
+      setSaveErr(e?.message ?? e?.data?.error ?? "Couldn't save the key.");
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  async function sendTest() {
+    if (testBusy) return;
+    setTestBusy(true);
+    setTestMsg(null);
+    try {
+      const r: any = await sendOmiTest({});
+      if (r?.ok) {
+        setTestMsg({
+          kind: "ok",
+          text:
+            typeof r?.size_bytes === "number"
+              ? `Sent ${r.size_bytes} bytes — check the journal.`
+              : "Sent — check the journal.",
+        });
+      } else {
+        setTestMsg({
+          kind: "err",
+          text: r?.error ?? "OMI test refused the chunk.",
+        });
+      }
+    } catch (e: any) {
+      setTestMsg({
+        kind: "err",
+        text: e?.message ?? e?.data?.error ?? "Couldn't reach the pipeline.",
+      });
+    } finally {
+      setTestBusy(false);
+      setTimeout(() => setTestMsg(null), 6000);
+    }
+  }
+
+  async function disconnect() {
+    if (discBusy) return;
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(
+        "Disconnect the Groq transcription key? OMI will keep its webhook " +
+          "but audio won't be transcribed until you paste a new key.",
+      )
+    ) {
+      return;
+    }
+    setDiscBusy(true);
+    try {
+      await disconnectOmiGroqKey({});
+      refetch();
+    } catch (e) {
+      console.error("omi disconnect failed", e);
+    } finally {
+      setDiscBusy(false);
+    }
+  }
+
+  function copyWebhook() {
+    if (card.webhookUrl) {
+      navigator.clipboard?.writeText(card.webhookUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  }
+
+  const address =
+    card.state === "configured"
+      ? "Wearable audio · transcribing"
+      : card.state === "needs_groq_key"
+        ? "Paired — add Groq key"
+        : card.state === "error"
+          ? "Needs attention"
+          : "Wearable audio stream";
+
+  return (
+    <ChannelCard
+      name="Omi"
+      address={address}
+      note="Ambient voice. Wear it; I will keep up."
+      status={card.pill}
+    >
+      {card.state === "unconfigured" && (
+        <div className="mt-5 space-y-3">
+          <p
+            className="font-body italic text-[13px]"
+            style={{ color: "var(--marginalia)" }}
+          >
+            {card.description}
+          </p>
+          <Link to="/connections" className="btn-ghost mt-2 inline-block">
+            Pair device →
+          </Link>
+        </div>
+      )}
+
+      {card.state === "needs_groq_key" && (
+        <div className="mt-5 space-y-3">
+          <p
+            className="font-body italic text-[13px]"
+            style={{ color: "var(--marginalia)" }}
+          >
+            {card.description}
+          </p>
+          <div className="space-y-2">
+            <div
+              className="font-mono text-[10px] uppercase tracking-[0.22em]"
+              style={{ color: "var(--marginalia)" }}
+            >
+              Groq API key
+            </div>
+            <div className="flex gap-2 items-baseline">
+              <input
+                type={showKey ? "text" : "password"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="gsk_…"
+                className="flex-1 bg-transparent border border-rule px-2 py-1 font-mono text-[12px]"
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey((s) => !s)}
+                className="btn-link"
+              >
+                {showKey ? "Hide" : "Show"}
+              </button>
+              <button
+                onClick={save}
+                disabled={saveBusy || !keyValid}
+                className="btn-ghost"
+              >
+                {saveBusy ? "…" : "Save key"}
+              </button>
+            </div>
+            {keyHint && (
+              <p
+                className="font-body italic text-[12px]"
+                style={{ color: "var(--marginalia)" }}
+              >
+                {keyHint}
+              </p>
+            )}
+            <p
+              className="font-body italic text-[12px]"
+              style={{ color: "var(--marginalia)" }}
+            >
+              Get a key from{" "}
+              <a
+                href="https://console.groq.com/keys"
+                target="_blank"
+                rel="noreferrer"
+                className="underline"
+              >
+                console.groq.com/keys
+              </a>
+              . It lives in Vaultwarden; Alfred reads it server-side.
+            </p>
+            {saveErr && (
+              <p
+                className="font-body italic text-[13px]"
+                style={{ color: "var(--brass)" }}
+              >
+                {saveErr}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {card.state === "configured" && (
+        <div className="mt-5 space-y-4">
+          <p
+            className="font-body italic text-[13px]"
+            style={{ color: "var(--marginalia)" }}
+          >
+            {card.description}
+          </p>
+
+          {card.showWebhookBlock && card.webhookUrl && (
+            <div className="space-y-2">
+              <div
+                className="font-mono text-[10px] uppercase tracking-[0.22em]"
+                style={{ color: "var(--marginalia)" }}
+              >
+                Webhook URL
+              </div>
+              <div className="flex items-center gap-2">
+                <code
+                  className="flex-1 font-mono text-[11px] border border-rule p-2 truncate"
+                  style={{ color: "var(--ink)" }}
+                >
+                  {card.webhookUrl}
+                </code>
+                <button onClick={copyWebhook} className="btn-ghost">
+                  {copied ? "Copied" : "Copy"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-3 items-baseline pt-1">
+            <button
+              onClick={sendTest}
+              disabled={testBusy}
+              className="btn-ghost"
+            >
+              {testBusy ? "…" : "Test pipeline"}
+            </button>
+            <button
+              onClick={disconnect}
+              disabled={discBusy}
+              className="btn-link"
+            >
+              Disconnect transcription key
+            </button>
+          </div>
+
+          {testMsg && (
+            <p
+              className="font-body italic text-[12px]"
+              style={{
+                color:
+                  testMsg.kind === "ok" ? "var(--marginalia)" : "var(--brass)",
+              }}
+            >
+              {testMsg.kind === "ok" ? "✓ " : "✗ "}
+              {testMsg.text}
+            </p>
+          )}
+        </div>
+      )}
+
+      {card.state === "error" && (
+        <div className="mt-5 space-y-3">
+          <p
+            className="font-body italic text-[13px]"
+            style={{ color: "var(--brass)" }}
+          >
+            {card.description}
+          </p>
+          <div className="flex gap-3 items-baseline">
+            <button onClick={() => refetch()} className="btn-ghost">
+              Try again
+            </button>
+            <button
+              onClick={disconnect}
+              disabled={discBusy}
+              className="btn-link"
+            >
+              Disconnect
+            </button>
+          </div>
+        </div>
+      )}
+    </ChannelCard>
   );
 }
