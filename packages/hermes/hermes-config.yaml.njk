@@ -355,6 +355,34 @@ mcp_servers:
 
 {%- if is_main %}
 # =============================================================================
+# Gateway platforms — built-in messaging adapters
+# =============================================================================
+# Each `gateway.platforms.<name>` block opts that channel into Hermes' own
+# gateway runtime. Credentials are loaded from env-var names declared here
+# (never inlined) so they round-trip through the per-profile .env that
+# ctrl-api's /channels cards write to.
+#
+# SMS — Hermes' built-in Twilio adapter (gateway/platforms/sms.py). Enabled
+# here by default; ctrl-api's /channels SMS card stores Twilio credentials
+# in Vaultwarden + writes them into this profile's .env, which Hermes reads
+# on boot. The four `*_env` keys MUST match what the /channels card writes
+# (TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER) and what
+# render_hermes.py's _RUNTIME_KEY_PREFIXES preserves across re-renders.
+# Webhook host/port default to Hermes' built-ins (8080) and can be
+# overridden via SMS_WEBHOOK_HOST / SMS_WEBHOOK_PORT in the per-profile
+# .env if a tenant needs to bind elsewhere — we deliberately don't hardcode
+# them here so the Hermes default tracks whatever the adapter picks.
+# Main-profile only: workers/heavy run no channels.
+gateway:
+  platforms:
+    sms:
+      enabled: true
+      account_sid_env: TWILIO_ACCOUNT_SID
+      auth_token_env: TWILIO_AUTH_TOKEN
+      phone_number_env: TWILIO_PHONE_NUMBER
+      allowed_users_env: SMS_ALLOWED_USERS
+
+# =============================================================================
 # Plugins (main profile only)
 # =============================================================================
 # hermes-lcm: lossless cross-session context engine. Replaces the default
