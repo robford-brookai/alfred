@@ -366,6 +366,66 @@ export const getSmsAuthorizedUsers = async (
   });
 };
 
+// Lane III (OMI, 2026-05-25) — OMI channel on /channels. One query + three
+// actions, all proxied to Lane I's ctrl-api endpoints under
+// /api/v1/channels/omi/*.
+//
+// Shape:
+//   getOmiChannelStatus  → { configured, state, error, webhook_url,
+//                            groq_key_present, recent_transcripts_24h,
+//                            last_audio_at }
+//                          (state lives in omiCardCore.OmiState)
+//   setOmiGroqKey        → 200 { ok, state }  or throws on Groq-rejection
+//   disconnectOmiGroqKey → 200 { ok }
+//   sendOmiTest          → 200 { ok, size_bytes }
+//
+// The Groq key itself is stored server-side in Vaultwarden; the action
+// only carries it across the SaaS → tenant proxy in transit. The card
+// never reads the key back.
+export const getOmiChannelStatus = async (
+  _args: unknown,
+  context: any,
+) => {
+  const instance = await getUserInstance(context);
+  return proxyToTenant(instance, {
+    path: "/api/v1/channels/omi/status",
+  });
+};
+
+export const setOmiGroqKey = async (
+  args: { api_key: string },
+  context: any,
+) => {
+  if (!args?.api_key?.trim()) {
+    throw new HttpError(400, "api_key is required");
+  }
+  const instance = await getUserInstance(context);
+  return proxyToTenant(instance, {
+    method: "PUT",
+    path: "/api/v1/channels/omi/groq-key",
+    body: { api_key: args.api_key.trim() },
+  });
+};
+
+export const disconnectOmiGroqKey = async (
+  _args: unknown,
+  context: any,
+) => {
+  const instance = await getUserInstance(context);
+  return proxyToTenant(instance, {
+    method: "DELETE",
+    path: "/api/v1/channels/omi/groq-key",
+  });
+};
+
+export const sendOmiTest = async (_args: unknown, context: any) => {
+  const instance = await getUserInstance(context);
+  return proxyToTenant(instance, {
+    method: "POST",
+    path: "/api/v1/channels/omi/test",
+  });
+};
+
 // ============================================================
 // Dashboard Home
 // ============================================================

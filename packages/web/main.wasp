@@ -809,6 +809,31 @@ query getVoiceChannelStatus {
   entities: []
 }
 
+// Lane III (OMI, 2026-05-25) — Phase-6b OMI channel card. One query +
+// three actions backed by ctrl-api /api/v1/channels/omi/*. State
+// derivation lives in omiCardCore.ts; the card's job is to surface the
+// 4 channel states (unconfigured / needs_groq_key / configured / error)
+// and let the operator paste a Groq key into Vaultwarden.
+query getOmiChannelStatus {
+  fn: import { getOmiChannelStatus } from "@src/dashboard/operations",
+  entities: []
+}
+
+action setOmiGroqKey {
+  fn: import { setOmiGroqKey } from "@src/dashboard/operations",
+  entities: []
+}
+
+action disconnectOmiGroqKey {
+  fn: import { disconnectOmiGroqKey } from "@src/dashboard/operations",
+  entities: []
+}
+
+action sendOmiTest {
+  fn: import { sendOmiTest } from "@src/dashboard/operations",
+  entities: []
+}
+
 query getAgentConfig {
   fn: import { getAgentConfig } from "@src/dashboard/operations",
   entities: []
