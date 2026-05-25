@@ -49,6 +49,7 @@ RUN pip install --no-cache-dir "jinja2==3.1.6"
 # repo-relative.
 COPY packages/hermes/init/entrypoint.sh        ./entrypoint.sh
 COPY packages/hermes/init/render_hermes.py     ./render_hermes.py
+COPY packages/hermes/init/render_sms_gateway.py ./render_sms_gateway.py
 COPY packages/hermes/init/sure-bootstrap.rb    ./sure-bootstrap.rb
 COPY packages/hermes/init/sure-mutate-base.rb  ./sure-mutate-base.rb
 COPY packages/hermes/init/sure-account-mutate.rb    ./sure-account-mutate.rb

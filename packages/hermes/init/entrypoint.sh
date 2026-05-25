@@ -442,6 +442,24 @@ done
 # /api/v1/channels/telegram/token, which writes the per-profile .env via
 # `docker exec` and bounces the gateway. No init-time step required.
 
+# --- 6c. SMS gateway block — MUST BE MANAGED HERE ---------------------------
+# Unlike Telegram, Hermes' SMS adapter (`gateway/platforms/sms.py`) is
+# strictly opt-in: it only starts its webhook listener when config.yaml
+# carries a `gateway.platforms.sms` block with `enabled: true` AND the
+# Twilio env vars (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`,
+# `TWILIO_PHONE_NUMBER`) are populated in the per-profile .env. The
+# template-baked block (hermes-config.yaml.njk) only lands on a FIRST
+# seed; an already-existing operator-owned config.yaml is preserved by
+# `render_hermes.py` and would never receive the new block. This step is
+# an idempotent ADD-only mutator that backfills the block whenever it's
+# missing, leaving any operator-set state (incl. `enabled: false`)
+# untouched.
+MAIN_PROFILE_DIR="$HERMES_DATA_DIR/profiles/main"
+if [[ -f "$MAIN_PROFILE_DIR/config.yaml" ]]; then
+    MAIN_PROFILE_DIR="$MAIN_PROFILE_DIR" \
+        python3 /setup/render_sms_gateway.py
+fi
+
 # =============================================================================
 # 7. Permissions.
 #
