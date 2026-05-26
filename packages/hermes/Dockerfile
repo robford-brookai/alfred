@@ -109,7 +109,7 @@ RUN pip install --no-cache-dir \
 # upstream needle fails the build loudly.
 #
 # Sir 2026-05-26 — local-only durable fix for an upstream Hermes bug.
-COPY patch_upstream_hermes.py /tmp/patch_upstream_hermes.py
+COPY packages/hermes/patch_upstream_hermes.py /tmp/patch_upstream_hermes.py
 RUN python3 /tmp/patch_upstream_hermes.py \
  && grep -q '"\.html": "text/html"' /usr/local/lib/python3.12/site-packages/gateway/platforms/base.py \
  && grep -q '"\.html", "\.htm"' /usr/local/lib/python3.12/site-packages/gateway/platforms/slack.py \
