@@ -70,7 +70,13 @@ export function registerOmiRoutes(): void {
   // Always returns 200 (never block the device)
   addRoute("POST", "/api/v1/streams/omi/audio", async ({ req, res, query }) => {
     const token = query.get("token") || "";
-    const uid = query.get("uid") || "unknown";
+    // Sanitize uid: only [a-zA-Z0-9_-] survives. The OMI device has been
+    // observed sending malformed query strings (e.g. `?uid=omi-device?sample_rate=16000`,
+    // using `?` instead of `&` between params), which produced a literal `?` in
+    // the uid value and a tooling-hostile directory name on disk. Forbidden
+    // chars get squashed to `_`. Empty result falls back to "unknown".
+    const rawUid = query.get("uid") || "";
+    const uid = rawUid.replace(/[^a-zA-Z0-9_-]/g, "_") || "unknown";
     const sampleRate = parseInt(query.get("sample_rate") || "16000", 10);
 
     // Always respond 200 to never block the Omi device
