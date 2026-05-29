@@ -5,6 +5,110 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the `alfred-vault` package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-05-29]
+
+Alfred Black becomes **the principal's house operator**. Before this
+release, "Alfred can control my home" was a vibes claim — he could read a
+few states through Home Assistant if everything was already configured,
+and that was it. After this release he is a full Tier-4 superuser on
+Home Assistant: he can install Hue with the IP you tell him, install a
+HACS theme, restart Core (auto-snapshotting first), provision a child
+account with restricted access, rename an entity, write a wake-word
+model into `/share/openwakeword/`, SSH into the host to tail a log, and
+log every destructive verb against a Desk decision so you can audit
+who-did-what-and-why a week later. The whole **Tier 4 HA Autonomy**
+project (GH #115/#158) shipped tonight in eight phased PRs (#161-#168)
+with locked defaults: destructive verbs require a `decision_ref`, every
+backup-needing verb auto-snapshots first via `triggerBackupBeforeAction`,
+and every non-trivial write lands a daybook entry. The hass MCP tool
+catalogue grew from **16 to 85** in one session.
+
+The structural enabler is **the alfred-ha Supervisor bridge** (v1.1.1)
+— a HACS-installed custom component that exposes nine LLAT-callable HA
+services (`alfred.supervisor_call`, `supervisor_addon_info`,
+`supervisor_addon_options_update`, `supervisor_host_info`,
+`supervisor_os_info`, and four `supervisor_share_*` for file CRUD under
+`/share/`). HA's own LLATs are Core-scoped by design; this bridge gives
+LLAT callers full Supervisor scope through a path-safety-guarded
+proxy, which means Alfred no longer needs SSH for any addon-management
+or shared-file write. The wake-word `.tflite` upload that motivated the
+bridge proved the path end-to-end — a single
+`POST /api/services/alfred/supervisor_share_write` landed
+`alfred.tflite` at `/share/openwakeword/alfred.tflite` and openWakeWord
+picked it up after one addon restart.
+
+**HA conversation agent live.** `conversation.alfred` is now the default
+engine on the principal's Assist pipeline
+(`01k4qpm8fz8r1nx59zjdrxtasp`). Channel-token mint (#140) +
+`/api/v1/channels/ha/turn` (#122) + a v1.1.1 HACS install land the
+custom component on the principal's HA via WebSocket; pipeline updates
+via `assist_pipeline/pipeline/update` route every Assist turn through
+the same Hermes-main session store as Slack / Telegram / email / web
+chat, so the kitchen voice satellite and the dashboard typed chat are
+the same Alfred with the same memory. Voice bridges still own the
+realtime audio path for phone calls; the HA-side text path uses HA
+Cloud STT + ElevenLabs TTS at the edges.
+
+**Wake word: the truth, with sources.** The `alfred` openWakeWord model
+(from `fwartner/home-assistant-wakewords-collection`) is loaded on the
+host. **It will fire on Wyoming-protocol satellites** that stream
+audio to HA. **It will NOT fire on the Home Assistant Voice PE**
+because that device runs `microWakeWord` (a different runtime, model
+format not interchangeable) on the on-device ESP32-S3, with a fixed
+firmware model list (`Hey Jarvis` / `Hey Mycroft` / `Okay Nabu`). To get
+"Alfred" on Voice PE means either training a `microWakeWord` model and
+flashing custom firmware via ESPHome Builder, or using the experimental
+community firmware fork that flips `use_wake_word: true` to enable
+streaming. Tracked upstream at
+[`esphome/home-assistant-voice-pe#334`](https://github.com/esphome/home-assistant-voice-pe/issues/334).
+
+**SSH wired both ways.** The principal's `~/.ssh/id_ed25519` and a
+freshly-generated `alfred-hermes@home.alfred.black` ed25519 key were
+written to the `core_ssh` addon's `authorized_keys` via the new bridge
+(`alfred.supervisor_addon_options_update`). Both keys verified
+end-to-end — Alfred can `ssh root@100.70.124.6 -p 22` from inside the
+Hermes container, the principal can do the same from their Mac (LAN or
+Tailscale). Alfred's private key is stored in Vaultwarden as
+**"HA SSH (Alfred Hermes)"** in the `Home Assistant` folder, with the
+connection card (host / port / fingerprint / pubkey) as custom fields
+so Alfred can read individual values cleanly. The new skill doc (#169)
+teaches Alfred the **decision tree** — SSH only when MCP and the
+bridge can't cover the job (live log tail, `/config/configuration.yaml`
+edits, `df -h`), because SSH bypasses the gate-and-audit machinery
+that Tier-4 defaults require.
+
+**Operational cleanups that bit us and got fixed:**
+`channels_ha`'s `vault-cli` response parser was reading the
+double-wrapped LIST shape against single-object responses, causing
+`VAULT_LLAT_MISSING` 502s once any single-object endpoint was hit
+(#157). The `deploy-compose` workflow that was supposed to auto-roll
+docker-compose.yaml + Caddyfile to the fleet on every main push shipped
+in #156 but its `FLEET_SSH_KEY` repo secret was never set, so #156 and
+#159 both failed silently at `Configure SSH` until I noticed and added
+the secret. The Caddyfile's `@public_webhooks` matcher omitted
+`/api/v1/channels/ha/*`, so HA's preflight POST to `/turn` hit the SPA's
+nginx and got a misleading 405 — same pattern as the May-28 Composio
+webhook fix, broadened in #159 along with a `caddy` `pids_limit` bump
+from 256 → 1024 (after a runtime `errno=11` saturation event during the
+HA setup run) and a `deploy/README.md` note that `sed -i` on the
+Caddyfile changes the host inode and requires `docker restart` to
+re-mount. The `mcp-stdio` bundle on `home`'s `/hermes-state/` was a week
+stale (chat-Alfred missing the `hass` and `files` MCP servers entirely
+because the operator-owned-config preservation pattern was incorrectly
+applied to a build artifact); #160 makes the rsync unconditional on
+every init and adds an ADD-only mutator that grafts required
+`mcp_servers` entries into the operator-owned `config.yaml`.
+
+**State.db migrations 0011-0013** add `ha_event`, `ha_backup_ref`
+(with `triggered_by` provenance: `user` / `auto:<verb>` /
+`strategy:auto`), `ha_integration_ref` (with `removed_at` soft-delete so
+"Alfred installed and removed this" survives), and `ha_user_ref` (with
+`llat_vw_id` mapping each HA user account to its Vaultwarden item).
+
+The full new tool catalogue + decision tree is documented in
+`packages/mcp-server/skills/alfred-mcp-skill.md` (#169); the live Hermes
+runtime on the principal's tenant has the new bundle as of this release.
+
 ## [2026-05-25]
 
 Alfred Black becomes **one Alfred**. Until this release, a "delegate" from
