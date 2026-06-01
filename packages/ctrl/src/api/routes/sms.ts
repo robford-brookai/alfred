@@ -50,6 +50,53 @@ import {
 import { appendAudit } from "./state.js";
 import { restartProfile } from "../../hermes/supervisor.js";
 
+// ── #206 Lane IV — per-(profile, channel_kind) identity override ──────────
+// Lane I's channel_identity table + resolver landed via #221; use the real
+// helper. NOTE: **Twilio SMS** cannot override the From-side display name on
+// a per-message basis — the carrier shows the fixed From number / registered
+// Alphanumeric Sender ID. This adapter READS the override (one consistent
+// code-path across channels) but LOGS the limitation and proceeds without
+// applying it (documented in the PR).
+import {
+  resolveChannelIdentity,
+  type ResolvedChannelIdentity,
+} from "../../db/channelIdentity.js";
+
+const RESERVED_PROFILES_FOR_IDENTITY: ReadonlySet<string> = new Set([
+  "main",
+  "workers",
+  "heavy",
+  "codex-builder",
+]);
+
+/**
+ * Log that the SMS identity override is being ignored (Twilio cannot
+ * override From-display per message). Returns the log line so the unit
+ * test can assert it without spying on console.warn.
+ */
+export function buildSmsIdentityIgnoredLogLine(
+  profileSlug: string,
+  override: ResolvedChannelIdentity | null,
+): string | null {
+  if (!override) return null;
+  if (RESERVED_PROFILES_FOR_IDENTITY.has(profileSlug)) return null;
+  const parts: string[] = [];
+  if (override.display_name) parts.push(`display_name='${override.display_name}'`);
+  if (override.avatar_path) parts.push(`avatar_path='${override.avatar_path}'`);
+  if (parts.length === 0) return null;
+  return (
+    `[sms] identity override for profile '${profileSlug}' ignored ` +
+    `(Twilio SMS has no per-message From-display): ${parts.join(", ")}`
+  );
+}
+
+function maybeLogSmsIdentityIgnored(profileSlug: string): void {
+  if (RESERVED_PROFILES_FOR_IDENTITY.has(profileSlug)) return;
+  const override = resolveChannelIdentity(getStateDb(), profileSlug, "sms");
+  const line = buildSmsIdentityIgnoredLogLine(profileSlug, override);
+  if (line) console.warn(line);
+}
+
 const VAULT_CLI_URL = process.env.VAULT_CLI_URL || "http://vault-cli:8087";
 const HERMES_HOME =
   process.env.HERMES_HOME_IN_CONTAINER || "/hermes-state";
@@ -545,6 +592,9 @@ export async function smsSend(
         "no recipient — pass `to` or set SMS_ALLOWED_USERS in the hermes profile",
     };
   }
+  // #206 Lane IV — read the identity override and log that we're ignoring
+  // it (Twilio SMS has no per-message From-display). One log line per send.
+  maybeLogSmsIdentityIgnored(slug);
   const r = await twilioSendMessage(sid, token, from, recipient, text);
   if (r.ok && r.sid) return { ok: true, sid: r.sid };
   return { ok: false, error: r.error ?? "twilio send failed" };
@@ -885,6 +935,9 @@ export function registerSmsRoutes(): void {
       return;
     }
     const to = allowed[0];
+    // #206 Lane IV — log-only for SMS; Twilio cannot honour a per-message
+    // From-display override.
+    maybeLogSmsIdentityIgnored(paths.profileSlug);
     const r = await twilioSendMessage(sid, token, from, to, "Alfred SMS test");
     if (r.ok && r.sid) {
       sendJson(res, 200, {

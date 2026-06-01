@@ -54,6 +54,60 @@ import {
 import { appendAudit } from "./state.js";
 import { restartProfile } from "../../hermes/supervisor.js";
 
+// ── #206 Lane IV — per-(profile, channel_kind) identity override ──────────
+// Lane I's channel_identity table + resolver landed via #221; use the real
+// helper. **Email**: the From-header display name flows via AgentMail's
+// `from_name` on `/messages/send` (set when an override exists). Avatar is
+// informational only for outbound email (clients resolve via Gravatar /
+// sender domain) — we log that limitation, no upload to AgentMail.
+import {
+  resolveChannelIdentity,
+  type ResolvedChannelIdentity,
+} from "../../db/channelIdentity.js";
+
+const RESERVED_PROFILES_FOR_IDENTITY: ReadonlySet<string> = new Set([
+  "main",
+  "workers",
+  "heavy",
+  "codex-builder",
+]);
+
+/**
+ * Build the outbound AgentMail send payload, applying the per-profile
+ * identity override (#206 Lane IV) when one is present.
+ *
+ *   - `display_name` sets `from_name` in the payload — AgentMail renders
+ *     it as `"Display Name" <inbox-address>` on the From header.
+ *   - `avatar_path` is informational only for email (no in-band
+ *     attachment for sender-avatar); a warning is returned for the
+ *     caller to log.
+ *
+ * Exported for the unit test — asserts the payload shape without firing
+ * a real AgentMail request.
+ */
+export function buildEmailSendPayload(
+  to: string,
+  subject: string,
+  text: string,
+  override: ResolvedChannelIdentity | null,
+  profileSlug?: string,
+): { payload: Record<string, unknown>; avatar_warning: string | null } {
+  const payload: Record<string, unknown> = { to: [to], subject, text };
+  let avatarWarning: string | null = null;
+  if (override && profileSlug && !RESERVED_PROFILES_FOR_IDENTITY.has(profileSlug)) {
+    if (override.display_name) {
+      payload.from_name = override.display_name;
+    }
+    if (override.avatar_path) {
+      avatarWarning =
+        `[channels-email] avatar override for profile '${profileSlug}' is ` +
+        `informational only — recipients render the From-side avatar from ` +
+        `their mail client (Gravatar / domain). avatar_path=${override.avatar_path}`;
+    }
+  }
+  return { payload, avatar_warning: avatarWarning };
+}
+
 const HERMES_GATEWAY_URL =
   process.env.HERMES_GATEWAY_URL ||
   process.env.OPENCLAW_GATEWAY_URL ||
@@ -1023,11 +1077,23 @@ export function registerChannelsEmailRoutes(): void {
           : `Test email from profile '${slug}' (${inboxAddress}). ` +
             "If you see this, per-profile outbound is working.";
 
+      // #206 Lane IV — apply per-(profile, channel_kind) identity override
+      // (from_name on the AgentMail send payload). Avatar is informational
+      // only for email; we log the limitation if avatar_path is set.
+      const emailOverride = resolveChannelIdentity(getStateDb(), slug, "email");
+      const { payload: sendPayload, avatar_warning } = buildEmailSendPayload(
+        to,
+        subject,
+        text,
+        emailOverride,
+        slug,
+      );
+      if (avatar_warning) console.warn(avatar_warning);
       const send = await agentMailFetch(
         inboxApiKey,
         "POST",
         `/inboxes/${encodeURIComponent(inboxId)}/messages/send`,
-        { to: [to], subject, text },
+        sendPayload,
       );
       if (send.status < 200 || send.status >= 300) {
         sendJson(res, 502, {
