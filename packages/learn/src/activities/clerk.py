@@ -568,6 +568,15 @@ _BILLING_ERROR_MARKERS = (
     "api key has run out",
 )
 
+# openai-codex (ChatGPT Pro) usage-cap 429. Distinct from a transient
+# rate-limit 429: retrying the usage-cap variant only re-pins the cap, so
+# the route_decision / signal-extract paths must treat it as non-retryable
+# and let the rate-guard's reset-aware backoff hold them off.
+_USAGE_CAP_ERROR_MARKERS = (
+    "usage_limit_reached",
+    "the usage limit has been reached",
+)
+
 
 def _content_parts_text(content: Any) -> str:
     """Concatenate the text of an OpenAI-style ``content`` parts list.
@@ -752,13 +761,24 @@ async def _call_clerk(
         except Exception:
             detail = resp.text
         detail = str(detail)
-        is_billing = any(m in detail.lower() for m in _BILLING_ERROR_MARKERS)
+        detail_lower = detail.lower()
+        is_billing = any(m in detail_lower for m in _BILLING_ERROR_MARKERS)
+        # openai-codex (ChatGPT Pro) usage-cap 429. A plain transient 429
+        # stays retryable (Temporal rides the blip), but the Pro usage-cap
+        # variant carries ``usage_limit_reached`` — retrying just re-pins
+        # the exhausted cap, so it must be non-retryable. The rate-guard's
+        # parse_retry_after_from_exc reads ``resets_in_seconds`` off the
+        # same payload to schedule the real backoff.
+        is_usage_cap = any(
+            m in detail_lower for m in _USAGE_CAP_ERROR_MARKERS
+        )
         non_retryable = (
-            resp.status_code in (401, 402, 403) or is_billing
+            resp.status_code in (401, 402, 403) or is_billing or is_usage_cap
         )
         raise ApplicationError(
             f"Clerk run failed (HTTP {resp.status_code}): {detail[:300]}",
             type="ClerkBillingError" if (resp.status_code == 402 or is_billing)
+            else "ClerkUsageCapError" if is_usage_cap
             else "ClerkAuthError" if resp.status_code in (401, 403)
             else "ClerkRunError",
             non_retryable=non_retryable,

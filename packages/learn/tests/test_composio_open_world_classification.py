@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,13 +25,19 @@ from src.activities.signals import (  # noqa: E402
     _pre_filter,
 )
 
+# Use a timestamp relative to now (well inside the signal pre-filter's
+# MAX_EVENT_AGE_DAYS_DEFAULT=14 window) so the fixtures never expire.
+_recent_iso = (datetime.now(timezone.utc) - timedelta(days=1)).strftime(
+    "%Y-%m-%dT%H:%M:%SZ"
+)
+
 
 def _row(app: str, body: str, subject: str = "x") -> dict:
     payload = {"stream_id": f"composio-{app}-{app}-list", "stream_type": "composio",
-               "received_at": "2026-05-22T10:00:00Z", "summary": subject, "subject": subject,
+               "received_at": _recent_iso, "summary": subject, "subject": subject,
                "metadata": {"subject": subject, "body": body,
                             "event_type": "item", "parser": "composio"}}
-    return {"id": f"01J{app}", "ts": "2026-05-22T10:00:00Z", "channel": "composio",
+    return {"id": f"01J{app}", "ts": _recent_iso, "channel": "composio",
             "kind": "item", "payload_json": json.dumps(payload)}
 
 

@@ -126,10 +126,51 @@ async def parse_resurface_time(
         _PARSE_PROMPT_DELEGATE if intent == "delegate" else _PARSE_PROMPT
     )
     prompt = template.format(note=note.strip(), today_iso=today)
+    # Rate-guard check BEFORE the LLM call (mirrors steward + the signal-
+    # extract path). The decision-router's route_decision drives this once
+    # per decision; under an openai-codex usage-cap 429 every call would
+    # re-pin the cap. When the provider-429 backoff is active we skip the
+    # LLM and fall back to the null-resurface default rather than burning
+    # another 429 — the next tick retries once the backoff clears.
+    from src.activities.rate_guard import (
+        get_rate_guard,
+        parse_retry_after_from_exc,
+    )
+
+    rate_guard = get_rate_guard()
+    rate_decision = await rate_guard.check_and_reserve(
+        task_path="decision-router/parse-resurface",
+        matter_path="decision-router",
+    )
+    if not rate_decision.allowed:
+        await rate_guard.record_cap_skip(
+            task_path="decision-router/parse-resurface",
+            matter_path="decision-router",
+            cap=rate_decision.cap,
+        )
+        logger.warning(
+            "parse_resurface_time: rate-guarded cap=%s reason=%s "
+            "backoff_until=%.0f — skipped LLM, defaulting to null resurface",
+            rate_decision.cap, rate_decision.reason,
+            rate_decision.backoff_until,
+        )
+        return {
+            "resurface_at": None,
+            "reasoning": f"rate-guard blocked: {rate_decision.reason}",
+        }
     try:
         from src.activities.clerk import _call_clerk
         result = await _call_clerk(prompt)
     except Exception as exc:  # noqa: BLE001
+        # On a provider 429 (incl. the openai-codex usage-cap payload)
+        # register the reset-aware backoff so subsequent ticks hold off.
+        retry_after = parse_retry_after_from_exc(exc)
+        if retry_after is not None:
+            await rate_guard.record_429(retry_after or 60)
+            logger.warning(
+                "parse_resurface_time: 429 from provider — backoff "
+                "registered (retry_after=%ds)", retry_after or 60,
+            )
         logger.warning("parse_resurface_time: clerk failed: %s", exc)
         return {"resurface_at": None, "reasoning": f"clerk error: {exc}"}
     if not isinstance(result, dict):

@@ -52,6 +52,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -439,10 +440,65 @@ class RateGuard:
 # 429 detection helper
 # ---------------------------------------------------------------------------
 
+def _parse_usage_limit_reset_seconds(text: str) -> Optional[int]:
+    """Extract the cap-reset horizon (seconds) from an ``openai-codex``
+    usage-cap payload, if present.
+
+    The ChatGPT Pro / ``openai-codex`` provider returns HTTP 429 with a
+    body like::
+
+        {"type": "usage_limit_reached",
+         "message": "The usage limit has been reached",
+         "plan_type": "pro",
+         "resets_at": <epoch_seconds>,
+         "resets_in_seconds": <n>}
+
+    clerk surfaces that as an exception whose ``str()`` carries the
+    payload text. We prefer ``resets_in_seconds`` (already relative);
+    failing that we derive ``resets_at - now``. Returns ``None`` when the
+    text is not a usage-cap payload OR no reset horizon could be parsed
+    (caller then falls back to the generic 429 default).
+    """
+    lowered = text.lower()
+    if (
+        "usage_limit_reached" not in lowered
+        and "the usage limit has been reached" not in lowered
+    ):
+        return None
+
+    # resets_in_seconds — preferred, already a relative horizon.
+    m = re.search(r"resets_in_seconds[\"']?\s*[:=]\s*(\d+)", text)
+    if m:
+        try:
+            secs = int(m.group(1))
+        except ValueError:
+            secs = 0
+        if secs > 0:
+            return secs
+
+    # resets_at — absolute epoch seconds; convert to a relative horizon.
+    m = re.search(r"resets_at[\"']?\s*[:=]\s*(\d+)", text)
+    if m:
+        try:
+            resets_at = int(m.group(1))
+        except ValueError:
+            resets_at = 0
+        delta = int(resets_at - time.time())
+        if delta > 0:
+            return delta
+
+    # Usage-cap payload but no usable horizon — signal "429 detected"
+    # so the caller still backs off (with its 60s default).
+    return 0
+
+
 def parse_retry_after_from_exc(exc: BaseException) -> Optional[int]:
     """Extract a ``Retry-After`` integer from an exception, if present.
 
     Recognises:
+      * The ``openai-codex`` (ChatGPT Pro) usage-cap 429 payload
+        (``usage_limit_reached``) — parses ``resets_in_seconds`` (or
+        ``resets_at - now``) so the backoff lasts until the real cap reset.
       * ``httpx.HTTPStatusError`` with a 429 response and ``Retry-After``
         header (integer seconds OR HTTP-date — we handle integer only;
         HTTP-date falls back to ``None``, caller defaults to 60s).
@@ -453,6 +509,13 @@ def parse_retry_after_from_exc(exc: BaseException) -> Optional[int]:
     record_429). Returns ``0`` if 429 detected but no usable Retry-After
     (caller will use the 60s default inside record_429).
     """
+    # Usage-cap payload — highest priority. The provider tells us exactly
+    # when the cap resets; honour that so we don't keep poking the wall.
+    # Checked first because the payload can ride on an httpx error too.
+    usage_reset = _parse_usage_limit_reset_seconds(str(exc))
+    if usage_reset is not None:
+        return usage_reset
+
     # Direct httpx path — preferred when available.
     try:
         import httpx  # local import; this module avoids hard dep on httpx
