@@ -111,11 +111,18 @@ class LoggingConfig:
 
 @dataclass
 class CuratorConfig:
+    # When False, the daemon must not start the watch loop or scan the inbox.
+    # Maps from the unified config's top-level `curator.enabled`. Ref: cap-burn
+    # incident — `curator.enabled: false` was silently ignored.
+    enabled: bool = True
     vault: VaultConfig = field(default_factory=VaultConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     watcher: WatcherConfig = field(default_factory=WatcherConfig)
     state: StateConfig = field(default_factory=StateConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    # Consecutive pipeline failures (excluding rate-backoff defers) after which
+    # a poison inbox file is quarantined out of the watched tree.
+    max_consecutive_failures: int = 3
     # Skip Stage 4 entity enrichment to reduce token consumption.
     # Entities keep their stub content from Stage 2 (includes description
     # from the manifest). Re-enable by setting to False if richer entity
@@ -172,10 +179,16 @@ def load_from_unified(raw: dict[str, Any]) -> CuratorConfig:
     log_dir = log_raw.pop("dir", "./data")
     if "file" not in log_raw:
         log_raw["file"] = f"{log_dir}/curator.log"
-    return _build(CuratorConfig, {
+    built: dict[str, Any] = {
         "vault": vault_raw,
         "agent": raw.get("agent", {}),
         "watcher": tool.get("watcher", {}),
         "state": tool.get("state", {}),
         "logging": log_raw,
-    })
+    }
+    # Honor the unified config's top-level `curator.enabled` (default True).
+    if "enabled" in tool:
+        built["enabled"] = bool(tool["enabled"])
+    if "max_consecutive_failures" in tool:
+        built["max_consecutive_failures"] = tool["max_consecutive_failures"]
+    return _build(CuratorConfig, built)
