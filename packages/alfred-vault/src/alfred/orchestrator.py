@@ -37,6 +37,11 @@ def _run_curator(raw: dict[str, Any], skills_dir: str, suppress_stdout: bool = F
     from alfred.curator.utils import setup_logging
     config = load_from_unified(raw)
     setup_logging(level=log_cfg.get("level", "INFO"), log_file=log_file, suppress_stdout=suppress_stdout)
+    if not config.enabled:
+        # Skip launching the daemon entirely when curator.enabled is false.
+        # The daemon-level guard in run() is the must-have backstop; this just
+        # avoids spinning up the process at all.
+        return
     from alfred.curator.daemon import run
     asyncio.run(run(config, Path(skills_dir)))
 

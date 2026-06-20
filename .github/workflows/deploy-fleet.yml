@@ -27,6 +27,7 @@ on:
       - build-mcp-server
       - build-hermes
       - build-init
+      - build-alfred-worker
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -79,6 +80,7 @@ jobs:
               build-mcp-server) services="mcp-server" ;;
               build-hermes)     services="hermes" ;;
               build-init)       services="init" ;;
+              build-alfred-worker) services="alfred" ;;
               *) echo "::error::unknown trigger workflow: $wf"; exit 1 ;;
             esac
             hosts="${{ vars.ALFRED_FLEET_HOSTS || 'home,rj,joe,zsolt,miguel,rami' }}"

@@ -40,9 +40,22 @@ class State:
     version: int = 2
     last_run: str = ""
     processed: dict[str, ProcessedEntry] = field(default_factory=dict)
+    # Per-file consecutive REAL-failure counter (rate-backoff defers excluded).
+    # Keyed by inbox filename; drives poison-file quarantine. Reset on success.
+    failure_counts: dict[str, int] = field(default_factory=dict)
 
     def is_processed(self, filename: str) -> bool:
         return filename in self.processed
+
+    def record_failure(self, filename: str) -> int:
+        """Increment and return the consecutive-failure count for a file."""
+        count = self.failure_counts.get(filename, 0) + 1
+        self.failure_counts[filename] = count
+        return count
+
+    def reset_failures(self, filename: str) -> None:
+        """Clear the failure counter for a file (on success or quarantine)."""
+        self.failure_counts.pop(filename, None)
 
     def mark_processed(
         self,
@@ -66,6 +79,7 @@ class State:
             "version": self.version,
             "last_run": self.last_run,
             "processed": {k: v.to_dict() for k, v in self.processed.items()},
+            "failure_counts": self.failure_counts,
         }
 
     @classmethod
@@ -77,6 +91,7 @@ class State:
             version=data.get("version", 2),
             last_run=data.get("last_run", ""),
             processed=processed,
+            failure_counts=dict(data.get("failure_counts", {})),
         )
 
 

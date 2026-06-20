@@ -20,10 +20,18 @@ from pathlib import Path
 from alfred.vault.mutation_log import log_mutation
 from alfred.vault.ops import VaultError, vault_create, vault_edit, vault_read
 
+import time
+
 from .backends import VAULT_CLI_REFERENCE
 from .backends.openclaw import OpenClawBackend, _clear_agent_sessions, sync_workspace_claude_md
 from .config import CuratorConfig
 from .note_filter import _suppress_per_service_summary
+from .rate_backoff import (
+    RateBackoffDeferred,
+    arm_backoff,
+    parse_backoff_seconds_from_output,
+    read_backoff_until,
+)
 from .utils import get_logger
 
 log = get_logger(__name__)
@@ -34,6 +42,10 @@ class PipelineResult:
     """Result from the 4-stage pipeline."""
 
     success: bool = False
+    # True when the run was skipped because a shared rate-backoff is active.
+    # The caller must NOT treat this as a hard failure: leave the file pending
+    # (do not quarantine, do not increment the poison-file failure counter).
+    deferred: bool = False
     note_path: str = ""
     entities_created: list[str] = field(default_factory=list)
     entities_existing: list[str] = field(default_factory=list)
@@ -164,6 +176,19 @@ async def _call_llm(
     oc = config.agent.openclaw
     session_id = f"curator-{stage_label}-{uuid.uuid4().hex[:8]}"
 
+    # Cap-aware backoff: if a shared 429 backoff (set by us or the learn signal
+    # pipeline) is still active, do NOT launch the subprocess. Raising defers
+    # the file for later retry without burning a call against a known-closed cap.
+    backoff_until = read_backoff_until()
+    if backoff_until > time.time():
+        log.warning(
+            "pipeline.llm_deferred_backoff",
+            stage=stage_label,
+            until=backoff_until,
+            remaining=int(backoff_until - time.time()),
+        )
+        raise RateBackoffDeferred(backoff_until)
+
     # Clear previous session state
     _clear_agent_sessions(oc.agent_id)
 
@@ -247,6 +272,20 @@ async def _call_llm(
             code=proc.returncode,
             stderr=err[:500],
         )
+        # Inspect combined output for a 429. If the cap (openai-codex) or the
+        # gateway concurrency limiter rejected us, arm the SHARED backoff so we
+        # (and the learn pipeline) stop hammering, then defer this file.
+        backoff_secs = parse_backoff_seconds_from_output(raw + "\n" + err)
+        if backoff_secs is not None:
+            # 0 = 429 detected but no parseable horizon → use a 60s default.
+            until = arm_backoff(backoff_secs or 60)
+            log.warning(
+                "pipeline.llm_rate_limited",
+                stage=stage_label,
+                backoff_seconds=backoff_secs or 60,
+                until=until,
+            )
+            raise RateBackoffDeferred(until)
         return raw  # Return whatever output we got — note may still have been created
 
     log.info("pipeline.llm_completed", stage=stage_label, stdout_len=len(raw))
@@ -653,6 +692,37 @@ async def run_pipeline(
     result = PipelineResult()
 
     log.info("pipeline.start", file=filename)
+
+    try:
+        return await _run_pipeline_stages(
+            inbox_file=inbox_file,
+            inbox_content=inbox_content,
+            vault_context_text=vault_context_text,
+            config=config,
+            session_path=session_path,
+            result=result,
+        )
+    except RateBackoffDeferred as e:
+        # A shared rate-backoff is active (or a 429 just armed one). This is NOT
+        # a hard failure: the file stays pending and is retried once the backoff
+        # clears. The daemon must not quarantine or count it.
+        log.warning("pipeline.deferred", file=filename, until=e.until)
+        result.success = False
+        result.deferred = True
+        result.summary = str(e)
+        return result
+
+
+async def _run_pipeline_stages(
+    inbox_file: Path,
+    inbox_content: str,
+    vault_context_text: str,
+    config: CuratorConfig,
+    session_path: str,
+    result: PipelineResult,
+) -> PipelineResult:
+    """Run the 4 stages. May raise RateBackoffDeferred (handled by caller)."""
+    filename = inbox_file.name
 
     # Stage 1: Analyze + Write Note (LLM)
     note_path, manifest = await _stage1_analyze(

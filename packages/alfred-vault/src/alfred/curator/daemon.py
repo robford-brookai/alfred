@@ -23,12 +23,32 @@ from .backends.hermes import HermesBackend
 from .config import CuratorConfig
 from .context import build_vault_context
 from .pipeline import run_pipeline
+from .rate_backoff import RateBackoffDeferred
 from .state import StateManager
 from .utils import get_logger
 from .watcher import InboxWatcher
 from .writer import diff_vault, mark_processed, snapshot_vault
 
 log = get_logger(__name__)
+
+
+def _quarantine_file(inbox_file: Path, config: CuratorConfig) -> Path:
+    """Move a poison inbox file out of the watched tree so it stops re-queuing.
+
+    Target is ``<vault>/inbox/_quarantine/`` — a sibling of the watched inbox
+    contents but NOT itself watched (the observer is non-recursive and the
+    full_scan only iterates direct files, skipping subdirectories).
+    """
+    import shutil
+
+    quarantine_dir = config.vault.inbox_path / "_quarantine"
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    dest = quarantine_dir / inbox_file.name
+    # Avoid clobbering a same-named earlier quarantine victim.
+    if dest.exists():
+        dest = quarantine_dir / f"{inbox_file.stem}-{int(__import__('time').time())}{inbox_file.suffix}"
+    shutil.move(str(inbox_file), str(dest))
+    return dest
 
 
 def _load_skill(skills_dir: Path) -> str:
@@ -110,6 +130,9 @@ async def _process_file(
     vault_path_str = str(config.vault.vault_path)
     session_path = create_session_file()
 
+    success = False
+    deferred = False
+
     if _use_pipeline(config):
         # 4-stage pipeline for OpenClaw backend
         pipeline_result = await run_pipeline(
@@ -119,6 +142,8 @@ async def _process_file(
             config=config,
             session_path=session_path,
         )
+        success = pipeline_result.success
+        deferred = pipeline_result.deferred
 
         mutations = read_mutations(session_path)
         files_created = mutations["files_created"]
@@ -129,7 +154,9 @@ async def _process_file(
         audit_path = str(Path(config.state.path).parent / "vault_audit.log")
         append_to_audit_log(audit_path, "curator", mutations, detail=filename)
 
-        if not pipeline_result.success:
+        if deferred:
+            log.warning("daemon.deferred_backoff", file=filename, summary=pipeline_result.summary[:200])
+        elif not success:
             log.error("daemon.pipeline_failed", file=filename, summary=pipeline_result.summary[:500])
             log.warning("daemon.skip_processed_move", file=filename)
         else:
@@ -137,7 +164,7 @@ async def _process_file(
             if inbox_file.exists():
                 mark_processed(inbox_file, config.vault.processed_path)
 
-        if not files_created and not files_modified:
+        if success and not files_created and not files_modified:
             log.warning("daemon.no_changes", file=filename)
     else:
         # Legacy path for Claude and Zo backends
@@ -159,6 +186,7 @@ async def _process_file(
             inbox_filename=filename,
             vault_path=vault_path_str,
         )
+        success = result.success
 
         if use_mutation_log:
             mutations = read_mutations(session_path)
@@ -175,7 +203,7 @@ async def _process_file(
         audit_path = str(Path(config.state.path).parent / "vault_audit.log")
         append_to_audit_log(audit_path, "curator", mutations, detail=filename)
 
-        if not result.success:
+        if not success:
             log.error("daemon.agent_failed", file=filename, summary=result.summary[:500])
             log.warning("daemon.skip_processed_move", file=filename)
         else:
@@ -183,10 +211,41 @@ async def _process_file(
             if inbox_file.exists():
                 mark_processed(inbox_file, config.vault.processed_path)
 
-        if not files_created and not files_modified:
+        if success and not files_created and not files_modified:
             log.warning("daemon.no_changes", file=filename)
 
-    # Update state
+    if deferred:
+        # Rate-backoff defer — leave the file pending, do NOT count it as a
+        # failure (a long cap outage must not quarantine good files) and do
+        # NOT mark it processed. It will be retried once backoff clears.
+        log.info("daemon.deferred", file=filename)
+        return
+
+    if not success:
+        # Real failure (pipeline_failed / no note created). Count it; quarantine
+        # the file once it has failed too many times in a row so the poison file
+        # stops re-queuing forever (filenames accreting .tmp.tmp.tmp...).
+        count = state_mgr.state.record_failure(filename)
+        log.warning("daemon.failure_recorded", file=filename, failures=count)
+        if count >= config.max_consecutive_failures and inbox_file.exists():
+            try:
+                dest = _quarantine_file(inbox_file, config)
+                state_mgr.state.reset_failures(filename)
+                state_mgr.state.mark_processed(
+                    filename=filename,
+                    inbox_path=str(dest),
+                    files_created=[],
+                    files_modified=[],
+                    backend_used=config.agent.backend,
+                )
+                log.error("daemon.quarantined", file=filename, failures=count, dest=str(dest))
+            except OSError:
+                log.exception("daemon.quarantine_failed", file=filename)
+        state_mgr.save()
+        return
+
+    # Success — clear any prior failure streak and record the result.
+    state_mgr.state.reset_failures(filename)
     state_mgr.state.mark_processed(
         filename=filename,
         inbox_path=str(inbox_file),
@@ -206,6 +265,12 @@ async def _process_file(
 
 async def run(config: CuratorConfig, skills_dir: Path) -> None:
     """Main daemon entry point."""
+    # Honor `curator.enabled: false` — never start the watch loop or scan the
+    # inbox. Previously this flag was silently ignored. Ref: cap-burn incident.
+    if not config.enabled:
+        log.info("daemon.disabled", msg="curator.enabled is false — not starting")
+        return
+
     log.info("daemon.starting", backend=config.agent.backend)
 
     # Load skill text
@@ -281,6 +346,10 @@ async def run(config: CuratorConfig, skills_dir: Path) -> None:
                     async with sem:
                         try:
                             await _process_file(inbox_file, backend, skill_text, config, state_mgr)
+                        except RateBackoffDeferred:
+                            # Cap/concurrency backoff — leave the file pending,
+                            # do not mark processed. Retry once backoff clears.
+                            log.warning("daemon.deferred_backoff", file=inbox_file.name)
                         except Exception:
                             log.exception("daemon.process_error", file=inbox_file.name)
                             if inbox_file.exists():
