@@ -1588,6 +1588,43 @@ async def extract_signal_from_event(
             raw_quote=raw_quote,
         )
 
+        # 3c. Rate-guard check BEFORE invoking the LLM (mirrors steward's
+        # evaluate_task path). The guard holds a provider-429 backoff that
+        # the openai-codex usage-cap 429 sets via record_429; once the cap
+        # is hit, every per-event extraction would otherwise re-fire a 429
+        # and — because a failed extract never marks the event processed —
+        # keep the cap pinned in a self-sustaining storm. When the backoff
+        # is active we DO NOT call the LLM and DO NOT return None (which
+        # would mark the event processed as noise); we raise so the
+        # workflow defers the event and retries it once the backoff clears.
+        from src.activities.rate_guard import (  # local import — avoid
+            get_rate_guard,                       # touching workflow paths
+            parse_retry_after_from_exc,
+        )
+
+        rate_guard = get_rate_guard()
+        rate_decision = await rate_guard.check_and_reserve(
+            task_path=stream_event_path,
+            matter_path="signal-extract",
+        )
+        if not rate_decision.allowed:
+            await rate_guard.record_cap_skip(
+                task_path=stream_event_path,
+                matter_path="signal-extract",
+                cap=rate_decision.cap,
+            )
+            logger.warning(
+                "signals.extract_signal_from_event: rate-guarded cap=%s "
+                "reason=%s backoff_until=%.0f — skipped LLM, deferring event "
+                "path=%s",
+                rate_decision.cap, rate_decision.reason,
+                rate_decision.backoff_until, stream_event_path,
+            )
+            raise RuntimeError(
+                f"rate-guard blocked signal extraction for {stream_event_path}: "
+                f"{rate_decision.reason}"
+            )
+
         # 4. Clerk call. Phase 6.7 — retry transient session-limit
         # errors ("max active children" / "Could not get session key")
         # with bounded exponential backoff. These errors fire when many
@@ -1611,6 +1648,19 @@ async def extract_signal_from_event(
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 err_text = str(exc)
+                # On a provider 429 (incl. the openai-codex usage-cap
+                # payload) hand the reset horizon to the rate-guard so the
+                # next tick backs off, then stop retrying — a 429 won't
+                # clear within this loop's seconds-long sleeps.
+                retry_after = parse_retry_after_from_exc(exc)
+                if retry_after is not None:
+                    await rate_guard.record_429(retry_after or 60)
+                    logger.warning(
+                        "signals.extract_signal_from_event: 429 from provider "
+                        "path=%s — backoff registered (retry_after=%ds)",
+                        stream_event_path, retry_after or 60,
+                    )
+                    break
                 # Retry only the rate-limit / session-spawn classes;
                 # everything else (timeout, billing, malformed JSON)
                 # is unlikely to recover from a wait.
@@ -2185,6 +2235,40 @@ async def extract_signals_from_event(
             soul_md=soul_md,
         )
 
+        # Rate-guard check BEFORE the LLM call (mirrors steward + the
+        # single-signal extractor). Holds off every per-event extraction
+        # while a provider-429 backoff is active so the openai-codex
+        # usage-cap can't be re-pinned tick after tick. Blocked → raise so
+        # the workflow defers the event (does NOT mark it processed) and
+        # retries once the backoff clears.
+        from src.activities.rate_guard import (
+            get_rate_guard,
+            parse_retry_after_from_exc,
+        )
+
+        rate_guard = get_rate_guard()
+        rate_decision = await rate_guard.check_and_reserve(
+            task_path=stream_event_path,
+            matter_path="signal-extract",
+        )
+        if not rate_decision.allowed:
+            await rate_guard.record_cap_skip(
+                task_path=stream_event_path,
+                matter_path="signal-extract",
+                cap=rate_decision.cap,
+            )
+            logger.warning(
+                "signals.extract_signals_from_event: rate-guarded cap=%s "
+                "reason=%s backoff_until=%.0f — skipped LLM, deferring event "
+                "path=%s",
+                rate_decision.cap, rate_decision.reason,
+                rate_decision.backoff_until, stream_event_path,
+            )
+            raise RuntimeError(
+                f"rate-guard blocked signal extraction for {stream_event_path}: "
+                f"{rate_decision.reason}"
+            )
+
         import asyncio as _asyncio
         retry_delays = (3.0, 8.0, 20.0)
         llm_raw: Any = None
@@ -2199,6 +2283,17 @@ async def extract_signals_from_event(
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 err_text = str(exc)
+                # Provider 429 (incl. openai-codex usage-cap) → register
+                # the reset-aware backoff and stop retrying.
+                retry_after = parse_retry_after_from_exc(exc)
+                if retry_after is not None:
+                    await rate_guard.record_429(retry_after or 60)
+                    logger.warning(
+                        "signals.extract_signals_from_event: 429 from provider "
+                        "path=%s — backoff registered (retry_after=%ds)",
+                        stream_event_path, retry_after or 60,
+                    )
+                    break
                 if not any(
                     needle in err_text for needle in (
                         "max active children",
