@@ -26,7 +26,7 @@ DEFAULT_BACKOFF_PATH = "/alfred-data/state/steward/rate-guard.json"
 
 # JSON key both sides agree on. Epoch seconds; LLM calls are deferred until now
 # passes this value.
-_BACKOFF_KEY = "rate_429_until"
+_BACKOFF_KEY = "rate_429_until"  # gitleaks:allow — JSON key name, not a secret
 
 # Clamp window for armed backoffs: never shorter than 30s (avoid tight retry
 # loops), never longer than 24h (avoid a parse glitch stalling the daemon for
