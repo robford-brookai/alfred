@@ -195,11 +195,22 @@ class SignalExtractWorkflow:
         # the v5.6 dispatcher fix in place + cold-restart hygiene, 16
         # concurrent stays comfortably under the 20-cap because Skip
         # overlap means at most one tick is active at a time.
+        # signal_extract_pace_v1 (highest precedence): pace extraction to
+        # stay under the codex per-minute *burst* limit. Lower concurrency
+        # to 5/chunk + an inter-chunk sleep below. The cap-aware backoff
+        # from #268 handles the long-window usage cap; this handles the
+        # short-window burst limit that 16-concurrent chunks fired
+        # back-to-back briefly tripped (recoverable 429s).
         EXTRACT_CHUNK_SIZE: int = (
-            16
+            5
+            if workflow.patched("signal_extract_pace_v1")
+            else 16
             if workflow.patched("signal_extract_chunk_16_v2")
             else (8 if workflow.patched("signal_extract_chunk_8") else 16)
         )
+        # Inter-chunk delay (seconds) — only the pace patch applies one;
+        # all other history replays with 0 so timing stays deterministic.
+        PACE_DELAY_SECONDS = 8 if workflow.patched("signal_extract_pace_v1") else 0
         # 600s gives the slow tail of grok-4.1-fast responses room to land —
         # observed extracts returning past 300s and being cancelled by the
         # activity timeout, losing the result. clerk's polling is bounded
@@ -368,6 +379,12 @@ class SignalExtractWorkflow:
                         "signal_extract.mark_failed path=%s err=%s",
                         path, exc,
                     )
+
+            # Pace under the codex per-minute burst limit: durable sleep
+            # between chunks (Temporal-durable in the Python SDK), but not
+            # after the final chunk. Skipped (delay 0) for non-pace history.
+            if PACE_DELAY_SECONDS and (chunk_start + EXTRACT_CHUNK_SIZE) < len(targets):
+                await asyncio.sleep(PACE_DELAY_SECONDS)
 
         workflow.logger.info(
             "signal_extract.done listed=%d extracted=%d written=%d "
