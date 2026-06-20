@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,13 +26,20 @@ from src.activities.signals import (  # noqa: E402
     _pre_filter,
 )
 
+# Use a timestamp relative to now (well inside the signal pre-filter's
+# MAX_EVENT_AGE_DAYS_DEFAULT=14 window) so the fixtures never expire. The
+# same value is reused for both the fixture and the `created` assertion below.
+_recent_iso = (datetime.now(timezone.utc) - timedelta(days=1)).strftime(
+    "%Y-%m-%dT%H:%M:%SZ"
+)
+
 
 def _gmail_ingest_row() -> dict:
     """An ingest.db row mirroring a composio Gmail StreamEvent."""
     payload = {
         "stream_type": "composio",
         "source_ref": "composio:19e42a18b0d4116e",
-        "received_at": "2026-05-19T23:45:38Z",
+        "received_at": _recent_iso,
         "summary": '"Acme" <ceo@acme.com>: Q2 contract — please review by Friday',
         "sender": '"Acme" <ceo@acme.com>',
         "subject": "Q2 contract — please review by Friday",
@@ -48,7 +56,7 @@ def _gmail_ingest_row() -> dict:
     }
     return {
         "id": "01J9ABCXYZ",
-        "ts": "2026-05-19T23:45:38Z",
+        "ts": _recent_iso,
         "stream": "505d9c52-stream",
         "channel": "composio",
         "external_id": "composio:19e42a18b0d4116e",
@@ -63,7 +71,7 @@ def test_adapter_maps_gmail_to_extractor_shape() -> None:
     fm = rec["frontmatter"]
     assert fm["from"] == '"Acme" <ceo@acme.com>'
     assert fm["subject"].startswith("Q2 contract")
-    assert fm["created"] == "2026-05-19T23:45:38Z"
+    assert fm["created"] == _recent_iso
     assert rec["_ingest_id"] == "01J9ABCXYZ"
     # The composio event_type "email" must classify as gmail downstream.
     assert _infer_source_type(rec) == "gmail"
@@ -96,7 +104,7 @@ def test_adapter_composio_no_results_event_is_unknown() -> None:
         "summary": "SEARCH RETURNED NO RESULTS",
         "metadata": {"event_type": "item", "parser": "composio"},
     }
-    row = {"id": "x", "ts": "2026-05-20T00:00:00Z", "payload_json": json.dumps(payload)}
+    row = {"id": "x", "ts": _recent_iso, "payload_json": json.dumps(payload)}
     rec = _ingest_row_to_record(row)
     assert _infer_source_type(rec) == "unknown"
     accepted, _ = _pre_filter(rec)
