@@ -29,10 +29,20 @@ DEFAULT_BACKOFF_PATH = "/alfred-data/state/steward/rate-guard.json"
 _BACKOFF_KEY = "rate_429_until"  # gitleaks:allow — JSON key name, not a secret
 
 # Clamp window for armed backoffs: never shorter than 30s (avoid tight retry
-# loops), never longer than 24h (avoid a parse glitch stalling the daemon for
-# days).
+# loops), never longer than 7d. 7d (was 24h) so a weekly provider cap
+# (ChatGPT Pro usage_limit_reached reports a multi-day resets_in_seconds) is
+# waited out in full instead of re-probed every 24h; the ceiling still bounds
+# a bad parse.
 _MIN_BACKOFF = 30
-_MAX_BACKOFF = 24 * 60 * 60
+_MAX_BACKOFF = 7 * 24 * 60 * 60
+
+# Recent-429 grace (mirrors learn's rate_guard): after any 429, keep deferring
+# this long even past rate_429_until, so a herd can't re-probe a still-closed
+# cap at the boundary. Shared via the rate_429_last_event_ts key.
+_GRACE_SECONDS = 120
+# Timestamp of the most recent 429, written alongside rate_429_until so the
+# learn pipeline's grace accounts for curator-side 429s too.
+_LAST_EVENT_KEY = "rate_429_last_event_ts"
 
 
 class RateBackoffDeferred(Exception):
@@ -85,9 +95,19 @@ def read_backoff_until(path: str | Path | None = None) -> float:
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return 0.0
     try:
-        return float(data.get(_BACKOFF_KEY) or 0.0)
+        until = float(data.get(_BACKOFF_KEY) or 0.0)
     except (TypeError, ValueError):
-        return 0.0
+        until = 0.0
+    # Honor the recent-429 grace: a 429 within the grace window holds the
+    # backoff even past rate_429_until (boundary herd protection). Shared with
+    # the learn rate_guard via rate_429_last_event_ts.
+    try:
+        last_429 = float(data.get(_LAST_EVENT_KEY) or 0.0)
+    except (TypeError, ValueError):
+        last_429 = 0.0
+    if last_429:
+        until = max(until, last_429 + _GRACE_SECONDS)
+    return until
 
 
 def arm_backoff(seconds: float, path: str | Path | None = None) -> float:
@@ -98,8 +118,9 @@ def arm_backoff(seconds: float, path: str | Path | None = None) -> float:
     cap outage). Returns the resulting ``rate_429_until``.
     """
     p = resolve_backoff_path(path)
+    now = time.time()
     secs = max(_MIN_BACKOFF, min(_MAX_BACKOFF, int(seconds)))
-    new_until = time.time() + secs
+    new_until = now + secs
 
     data: dict = {}
     try:
@@ -117,6 +138,9 @@ def arm_backoff(seconds: float, path: str | Path | None = None) -> float:
         new_until = current
 
     data[_BACKOFF_KEY] = new_until
+    # Record the 429 time so the recent-429 grace (here + learn's rate_guard)
+    # holds the boundary herd.
+    data[_LAST_EVENT_KEY] = now
 
     try:
         Path(p).parent.mkdir(parents=True, exist_ok=True)
