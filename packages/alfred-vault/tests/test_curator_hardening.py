@@ -28,6 +28,8 @@ from alfred.curator.config import (
     load_from_unified,
 )
 from alfred.curator.rate_backoff import (
+    _GRACE_SECONDS,
+    _MAX_BACKOFF,
     RateBackoffDeferred,
     arm_backoff,
     parse_backoff_seconds_from_output,
@@ -99,6 +101,53 @@ def test_arm_backoff_only_extends(tmp_path):
     # Arming a shorter backoff must not shorten an existing longer one.
     until = arm_backoff(60, path=p)
     assert abs(until - far) < 0.01
+
+
+def test_arm_backoff_honors_multiday_horizon(tmp_path):
+    """A 4-day horizon is honored, not clamped to 24h."""
+    p = tmp_path / "rate-guard.json"
+    until = arm_backoff(4 * 24 * 60 * 60, path=p)
+    assert until - time.time() > 3.5 * 24 * 60 * 60
+
+
+def test_arm_backoff_clamps_at_7d(tmp_path):
+    """An absurd horizon is bounded by the 7d ceiling."""
+    p = tmp_path / "rate-guard.json"
+    until = arm_backoff(30 * 24 * 60 * 60, path=p)  # 30 days
+    assert until - time.time() <= _MAX_BACKOFF + 5
+    assert until - time.time() > _MAX_BACKOFF - 60
+
+
+def test_read_backoff_honors_recent_429_grace(tmp_path):
+    """Past rate_429_until but a 429 within grace -> read returns a future deadline."""
+    p = tmp_path / "rate-guard.json"
+    now = time.time()
+    p.write_text(
+        json.dumps({"rate_429_until": now - 10, "rate_429_last_event_ts": now - 10}),
+        encoding="utf-8",
+    )
+    assert read_backoff_until(p) > now  # grace holds it open
+
+
+def test_read_backoff_grace_clears_when_stale(tmp_path):
+    """Past rate_429_until and a stale 429 -> read returns the (past) deadline."""
+    p = tmp_path / "rate-guard.json"
+    now = time.time()
+    stale = now - (_GRACE_SECONDS + 60)
+    p.write_text(
+        json.dumps({"rate_429_until": stale, "rate_429_last_event_ts": stale}),
+        encoding="utf-8",
+    )
+    assert read_backoff_until(p) <= now  # grace cleared, calls may resume
+
+
+def test_arm_backoff_writes_last_event_ts(tmp_path):
+    """arm_backoff records rate_429_last_event_ts so learn's grace sees it."""
+    p = tmp_path / "rate-guard.json"
+    arm_backoff(60, path=p)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert "rate_429_last_event_ts" in data
+    assert abs(data["rate_429_last_event_ts"] - time.time()) < 5
 
 
 @pytest.mark.parametrize("text,expected", [

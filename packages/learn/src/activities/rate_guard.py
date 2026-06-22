@@ -94,6 +94,18 @@ MAX_WINDOW_SECONDS = max(WINDOW_SECONDS.values())
 # trims a real rolling-window query but bounds memory.
 MAX_RETAINED_EVENTS = 20_000
 
+# Longest provider-429 backoff we'll honor. 7d so a weekly cap
+# (ChatGPT Pro usage_limit_reached) is waited out in full instead of
+# re-probed every 24h; still a ceiling against a bad parse.
+RATE_429_MAX_BACKOFF_SECONDS = 7 * 24 * 60 * 60
+
+# Recent-429 grace: after ANY provider 429, keep deferring for this long even
+# once rate_429_until passes. Closes the concurrency race at the backoff
+# boundary — a herd of waiters can't all re-probe a still-closed cap the
+# instant the deadline expires. Self-clears: when the cap truly opens, 429s
+# stop, the last-event timestamp ages past the grace, and calls resume.
+RATE_429_GRACE_SECONDS = 120
+
 
 # ---------------------------------------------------------------------------
 # State path + I/O
@@ -265,6 +277,27 @@ class RateGuard:
                 counts=counts,
             )
 
+        # 1b) Recent-429 grace. Even past the deadline, if a 429 was recorded
+        #     within the grace window the cap is almost certainly still closed
+        #     (the deadline was an estimate, or a concurrent burst is mid-flight
+        #     right at the boundary). Hold the herd so it doesn't all re-probe a
+        #     closed cap at once. Self-clears once 429s stop arriving.
+        last_429 = float(state.get("rate_429_last_event_ts") or 0.0)
+        if last_429 and (now - last_429) < RATE_429_GRACE_SECONDS:
+            counts = self._snapshot_counts(state["events"], now, task_path, matter_path)
+            grace_until = last_429 + RATE_429_GRACE_SECONDS
+            logger.warning(
+                "rate_guard: blocked task=%s matter=%s reason=429_grace last_429=%.0fs_ago",
+                task_path, matter_path, now - last_429,
+            )
+            return RateDecision(
+                allowed=False,
+                reason=f"provider 429 {int(now - last_429)}s ago — grace backoff",
+                cap="rate_429",
+                backoff_until=grace_until,
+                counts=counts,
+            )
+
         events = _prune_events(state.get("events") or [], now)
 
         # 2) Walk the caps in order of decreasing window so a per-day cap
@@ -347,8 +380,12 @@ class RateGuard:
             secs = 60
         if secs <= 0:
             secs = 60
-        if secs > 60 * 60 * 24:
-            secs = 60 * 60 * 24  # cap at 24h — no provider back-off should be longer
+        if secs > RATE_429_MAX_BACKOFF_SECONDS:
+            # Cap at 7d so we HONOR a weekly provider cap (ChatGPT Pro's
+            # usage_limit_reached can report a multi-day resets_in_seconds);
+            # the ceiling still bounds a bad parse. Previously clamped at 24h,
+            # which made a multi-day cap re-probe every 24h and 429 each time.
+            secs = RATE_429_MAX_BACKOFF_SECONDS
 
         now = self._now()
         state = _read_state(self.cfg)
