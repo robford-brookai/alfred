@@ -935,10 +935,17 @@ if (( HERMES_RELAY_ENABLED == 1 )) && [[ -d "${PROFILES_DIR}/main/plugins/hermes
 
     # Dashboard: bundled web_dist (0.17 PyPI wheel). --isolated scopes it to the
     # main profile config so skills/cron/MCP render (vs the empty machine config).
+    # --insecure is REQUIRED for the 0.0.0.0 bind: 0.17 engages an OAuth auth gate
+    # on non-loopback binds and refuses to start without an auth provider. The
+    # dashboard listens only on the internal compose network (hermes:9119);
+    # tenants expose it over their private tailnet via `tailscale serve` (never
+    # public). FOLLOW-UP: register a basic_auth DashboardAuthProvider + a fixed
+    # secret in the main config for restart-surviving authed sessions (see
+    # memory project_hermes_017_upgrade_canary) — then drop --insecure.
     start_proc "dashboard" \
         "cd \"${MAIN_DIR}\" && set -a && . \"${MAIN_DIR}/.env\" && set +a \
          && exec hermes -p main dashboard --isolated --skip-build --no-open \
-                 --host 0.0.0.0 --port 9119"
+                 --insecure --host 0.0.0.0 --port 9119"
     log "dashboard started (:9119, main profile)"
 else
     log "relay/dashboard disabled (HERMES_RELAY_ENABLED!=1 or plugin absent)"

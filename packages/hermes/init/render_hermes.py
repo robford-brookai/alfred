@@ -482,6 +482,18 @@ def main() -> int:
             _cfg_new = re.sub(
                 r"(dispatch_in_gateway:\s*)(?i:true)\b", r"\1false", _cfg_text
             )
+            if "dispatch_in_gateway" not in _cfg_new:
+                # No kanban dispatch key at all — an operator-preserved config that
+                # predates the template's kanban block (e.g. home's codex-builder).
+                # 0.17 DEFAULTS dispatch_in_gateway ON, so the gateway runs the
+                # kanban dispatcher → 60s "tick failed" log noise (#175). Append a
+                # disabled top-level block (config is a flat top-level mapping, so
+                # a col-0 append is valid YAML).
+                _cfg_new = _cfg_new.rstrip("\n") + (
+                    "\n\n# alfred-black: kanban dispatcher disabled — Alfred uses"
+                    " Paperclip + Plane, not the kanban board.\n"
+                    "kanban:\n  dispatch_in_gateway: false\n"
+                )
             if _cfg_new != _cfg_text:
                 config_path.write_text(_cfg_new, encoding="utf-8")
                 print(
