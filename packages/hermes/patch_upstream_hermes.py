@@ -73,13 +73,17 @@ def main() -> None:
     )
 
     # slack.py — add .html / .htm to TEXT_INJECT_EXTENSIONS so HTML <=100KB
-    # inlines as text into the prompt.
+    # inlines as text into the prompt. Hermes 0.17 reformatted the set to one
+    # extension per line (was comma-joined on one line in 0.14), so anchor on
+    # the final ".cfg" entry + the set's closing brace and insert before it.
     patch(
         SLACK_PY,
-        '                        ".yaml", ".yml", ".toml", ".ini", ".cfg",',
+        '                        ".cfg",\n                    }',
         (
-            '                        ".yaml", ".yml", ".toml", ".ini", ".cfg",\n'
-            '                        ".html", ".htm",'
+            '                        ".cfg",\n'
+            '                        ".html",\n'
+            '                        ".htm",\n'
+            '                    }'
         ),
         "slack.py:TEXT_INJECT_EXTENSIONS",
     )
