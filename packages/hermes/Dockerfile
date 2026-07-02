@@ -211,40 +211,45 @@ RUN python3 /tmp/patch_upstream_hermes.py \
  && rm /tmp/patch_upstream_hermes.py
 
 # =============================================================================
-# response.output=None in the openai SDK streaming parser — OBSOLETE in 0.17.
-# The 2026-05-27 crash (`for output in response.output:` → 'NoneType' not
-# iterable) that patch_openai_sdk.py fixed on 0.14's SDK is already fixed
-# upstream in the openai SDK that Hermes 0.17 bundles. So we DROP the patch and
-# verify by asserting the OLD BUGGY form is ABSENT — a negative check that is
-# stable across openai SDK point releases (matching the exact fixed line was
-# brittle: the freshly-resolved SDK phrases the fix differently than home's
-# 2.24.0, which broke the first canary build). If a future SDK regresses to the
-# null-unsafe loop, this fails the build loudly and patch_openai_sdk.py (kept
-# in-tree) is restored.
-RUN if grep -qF 'for output in response.output:' \
-        /usr/local/lib/python3.12/site-packages/openai/lib/_parsing/_responses.py; then \
-      echo "FATAL: openai SDK regressed to null-unsafe 'for output in response.output:' — restore patch_openai_sdk.py" >&2; \
-      exit 1; \
-    fi
+# Patch: handle response.output=None in the openai SDK's streaming parser.
+# 2026-05-27 OpenAI changed Codex's streaming shape — response snapshots carry
+# output=None instead of []. parse_response() then crashes with 'NoneType' is
+# not iterable, taking down every Hermes-main turn on openai-codex. One-line
+# fix: `for output in (response.output or []):`.
+#
+# STILL REQUIRED under 0.17 (canary-confirmed 2026-07-02): the openai SDK 2.24.0
+# that Hermes 0.17 pins STILL ships the buggy `for output in response.output:`
+# in stock form — the fix was NOT adopted upstream. (An earlier canary iteration
+# wrongly assumed 0.17 made this obsolete; the golden home box merely had it
+# patched already, so home looked "fixed". Restored here.) The script is
+# idempotent (skips if already patched) + tripwire'd (fails loudly if the
+# needle moves in a future SDK).
+COPY packages/hermes/patch_openai_sdk.py /tmp/patch_openai_sdk.py
+RUN python3 /tmp/patch_openai_sdk.py \
+ && grep -q 'for output in (response.output or \[\]):' \
+        /usr/local/lib/python3.12/site-packages/openai/lib/_parsing/_responses.py \
+ && rm /tmp/patch_openai_sdk.py
 
 # =============================================================================
-# profile-dir-aware parent chmod in hermes_cli/auth.py — NEEDLE REMOVED in 0.17.
+# Patch: profile-dir-aware chmod in hermes_constants.secure_parent_dir (GH #119).
 #
-# The 0.14 fix (GH #119) neutralised upstream's `os.chmod(<path>.parent, 0o700)`
-# that ran on every auth-store save and reset the codex-builder profile dir mode
-# (0o711, needed for the paperclip-hermes adapter to traverse to .env for the
-# gateway API_SERVER_KEY) back to 0o700 → :18793 dispatch 401s. Hermes 0.17
-# REFACTORED this: auth.py no longer does the bare `os.chmod(parent, 0o700)`;
-# it routes through a `secure_parent_dir` helper that "refuses to chmod / or
-# top-level dirs (#25821)" and chmods only the auth FILE
-# (`auth_file.chmod(S_IRUSR|S_IWUSR)`). The old three needles are gone, so the
-# patch cannot apply and is DROPPED here.
-#
-# CANARY GATE: home runs codex-builder (ENABLE_CODEX_BUILDER=1), so the home
-# canary directly exercises this. VERIFY on the canary that the codex-builder
-# profile dir mode survives a token refresh AND a paperclip → :18793 dispatch
-# still authenticates. If #119 recurs under 0.17's secure_parent_dir, re-author
-# patch_upstream_hermes_auth.py (kept in-tree) against the new helper.
+# STILL REQUIRED under 0.17, re-authored for the refactor (canary-confirmed
+# 2026-07-02): 0.17 moved the auth-store parent-dir tighten out of
+# hermes_cli/auth.py into hermes_constants.secure_parent_dir(), but it STILL
+# `os.chmod(parent, 0o700)` — it only added a guard that refuses `/` and
+# top-level dirs (#25821), which does NOT cover a profile dir like
+# `/hermes-state/profiles/codex-builder` (4 path parts). So an auth-store save
+# still resets the codex-builder profile dir (0o711, needed for the
+# paperclip-hermes uid-1000 adapter to read .env for the gateway API_SERVER_KEY)
+# back to 0o700 → next paperclip → :18793 dispatch 401s. The patch teaches
+# secure_parent_dir to skip Hermes profile dirs (…/profiles/<name>); the #25821
+# root/top-level guard is preserved. Single site → covers all auth-save callers.
+# Idempotent (sentinel) + tripwire'd; needle verified byte-for-byte vs home 0.17.
+COPY packages/hermes/patch_upstream_hermes_auth.py /tmp/patch_upstream_hermes_auth.py
+RUN python3 /tmp/patch_upstream_hermes_auth.py \
+ && grep -q "alfred-black: never chmod a Hermes profile dir" \
+        /usr/local/lib/python3.12/site-packages/hermes_constants.py \
+ && rm /tmp/patch_upstream_hermes_auth.py
 
 # =============================================================================
 # Patch: fd-safe atomic write in utils.py (GH #222).
