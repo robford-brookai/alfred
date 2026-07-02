@@ -59,6 +59,17 @@ case "${ENABLE_CODEX_BUILDER_RAW,,}" in
     *)              ENABLE_CODEX_BUILDER=0 ;;
 esac
 
+# hermes-relay native-app bridge (QR pairing + android/desktop remote control +
+# provider-native voice) and the main-profile dashboard (:9119). Baked +
+# supervised on EVERY tenant as a capability; tailnet EXPOSURE is a separate
+# per-tenant step (`tailscale serve` on the sidecar). Unlike codex-builder this
+# DEFAULTS ON — set HERMES_RELAY_ENABLED to 0/false/no/off to opt a tenant out.
+HERMES_RELAY_ENABLED_RAW="${HERMES_RELAY_ENABLED:-true}"
+case "${HERMES_RELAY_ENABLED_RAW,,}" in
+    0|false|no|off) HERMES_RELAY_ENABLED=0 ;;
+    *)              HERMES_RELAY_ENABLED=1 ;;
+esac
+
 # Per-process restart backoff — a crash-looping process must not hammer the
 # provider or spin the CPU. Three rapid restarts then a longer cooldown.
 RESTART_DELAY="${HERMES_RESTART_DELAY:-5}"
@@ -418,6 +429,31 @@ if [[ -d /opt/one-alfred ]]; then
         rm -rf "$DEST"
         cp -r /opt/one-alfred "$DEST"
         log "installed one-alfred plugin -> \$HERMES_HOME/profiles/main/plugins/one-alfred"
+    fi
+fi
+
+# --- hermes-relay plugin (native-app bridge) --------------------------------
+# Vendored + baked at /opt/hermes-relay by the Dockerfile (see that dir's
+# VENDORED.md). Main only. Refresh-on-mtime like one-alfred. The plugin uses
+# absolute `plugin.*` imports but installs under hermes-relay/, so we ALSO
+# create the site-packages `plugin` import-shim symlink — without it
+# `python -m plugin.relay` dies with ModuleNotFoundError: No module named
+# 'plugin' (matches the golden home box's hand-made symlink).
+if [[ -d /opt/hermes-relay ]]; then
+    mkdir -p "$HERMES_HOME/profiles/main/plugins"
+    RELAY_DEST="$HERMES_HOME/profiles/main/plugins/hermes-relay"
+    if [[ ! -d "$RELAY_DEST" ]] \
+       || [[ /opt/hermes-relay/plugin.yaml -nt "$RELAY_DEST/plugin.yaml" ]] \
+       || [[ /opt/hermes-relay/__init__.py -nt "$RELAY_DEST/__init__.py" ]]; then
+        rm -rf "$RELAY_DEST"
+        cp -r /opt/hermes-relay "$RELAY_DEST"
+        log "installed hermes-relay plugin -> \$HERMES_HOME/profiles/main/plugins/hermes-relay"
+    fi
+    # import-shim symlink (idempotent; -f so a recreated dir re-points cleanly).
+    RELAY_SITE_DIR="$(python3 -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null || true)"
+    if [[ -n "$RELAY_SITE_DIR" && -d "$RELAY_SITE_DIR" ]]; then
+        ln -sfn "$RELAY_DEST" "${RELAY_SITE_DIR}/plugin" \
+            && log "linked relay import shim: ${RELAY_SITE_DIR}/plugin -> hermes-relay"
     fi
 fi
 
@@ -861,6 +897,51 @@ if (( ENABLE_CODEX_BUILDER == 1 )); then
     log "codex-builder gateway enabled (ENABLE_CODEX_BUILDER=1) — launching on :18793 as uid 10001"
 else
     log "codex-builder gateway disabled (ENABLE_CODEX_BUILDER!=1) — profile dir is rendered but no process launched"
+fi
+
+# =============================================================================
+# hermes-relay native-app relay (:8767) + main dashboard (:9119)
+# =============================================================================
+# Supervised on every tenant when HERMES_RELAY_ENABLED (default on). Both bind
+# 0.0.0.0 INSIDE the container (reachable as hermes:8767 / hermes:9119 on the
+# compose network); tailnet exposure is a separate per-tenant `tailscale serve`
+# on the sidecar — NOT done here. Tracked in PIDS, so the supervise loop below
+# respawns them like any gateway. Names are deliberately NOT `hermes-*` so the
+# loop's gateway-only probe_and_notify branch skips them.
+if (( HERMES_RELAY_ENABLED == 1 )) && [[ -d "${PROFILES_DIR}/main/plugins/hermes-relay" ]]; then
+    # Relay + dashboard both need the main gateway listening on :18789 (just
+    # launched above). Wait briefly; if it never comes up the supervise loop's
+    # backoff handles retries. `curl ... /` returns 0 on ANY response (incl.
+    # 401/404) = listening; non-zero = connection refused.
+    relay_wait=0
+    while ! curl -s -o /dev/null --max-time 2 "http://127.0.0.1:18789/" 2>/dev/null; do
+        relay_wait=$((relay_wait + 2)); sleep 2
+        if (( relay_wait > 120 )); then
+            log "WARN: main gateway :18789 not up after 120s — starting relay/dashboard anyway"
+            break
+        fi
+    done
+
+    MAIN_DIR="${PROFILES_DIR}/main"
+    # Relay: sources main .env for provider voice keys (OPENAI_API_KEY,
+    # OPENAI_REALTIME_MODEL, optional XAI/ELEVENLABS). `plugin.relay` resolves
+    # via the site-packages `plugin` symlink created in the install block above.
+    start_proc "relay" \
+        "cd \"${MAIN_DIR}\" && set -a && . \"${MAIN_DIR}/.env\" && set +a \
+         && RELAY_ALLOW_INSECURE_API_BEARER=1 RELAY_HERMES_CONFIG=\"${MAIN_DIR}/config.yaml\" \
+            exec python3 -m plugin.relay --no-ssl --host 0.0.0.0 --port 8767 \
+                 --webapi-url http://127.0.0.1:18789"
+    log "relay started (:8767, main profile)"
+
+    # Dashboard: bundled web_dist (0.17 PyPI wheel). --isolated scopes it to the
+    # main profile config so skills/cron/MCP render (vs the empty machine config).
+    start_proc "dashboard" \
+        "cd \"${MAIN_DIR}\" && set -a && . \"${MAIN_DIR}/.env\" && set +a \
+         && exec hermes -p main dashboard --isolated --skip-build --no-open \
+                 --host 0.0.0.0 --port 9119"
+    log "dashboard started (:9119, main profile)"
+else
+    log "relay/dashboard disabled (HERMES_RELAY_ENABLED!=1 or plugin absent)"
 fi
 
 # =============================================================================
