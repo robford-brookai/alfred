@@ -1,11 +1,20 @@
 # Pinned upstream dependency refs for the alfred-black hermes package
-# Docker builds. Update these when bumping upstream dependencies and open
-# a PR. CI reads these values and passes them as --build-arg to docker build.
+# Docker builds. Update these when bumping upstream dependencies and open a PR.
+# NOTE: build-hermes.yml passes NO --build-arg — the Dockerfile ARG defaults
+# govern the build. Keep this file in sync with those defaults by hand.
 
-# Hermes Agent — the AI runtime. Installed via pip from this git tag.
+# Hermes Agent — the AI runtime.
 # https://github.com/NousResearch/hermes-agent
-# v2026.5.16 == release v0.14.0 (latest at time of writing).
-HERMES_REF=v2026.5.16
+#
+# 2026-07-02 (fleet bake): installed from the PyPI WHEEL (==0.17.0), not a git
+# ref, so the dashboard `web_dist` bundle ships (the git build omits it). The
+# Dockerfile `ARG HERMES_VERSION` default is the source of truth.
+# 0.17.0 == the fleet bake  (was v2026.5.16 == 0.14.0, git-installed).
+HERMES_VERSION=0.17.0
+
+# hermes-relay native-app plugin is VENDORED at
+# packages/hermes/plugins/hermes-relay (no upstream tag maps to manifest 1.2.1;
+# captured from the golden home box). See that dir's VENDORED.md.
 
 # NOTE: the Alfred vault CLI is no longer fetched at a pinned external SHA.
 # It is vendored in-repo at packages/alfred-vault and COPYd into the

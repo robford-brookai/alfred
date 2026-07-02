@@ -134,11 +134,50 @@ RUN echo 'codex-builder:x:10001:10001::/hermes-state/profiles/codex-builder:/usr
 #               channels
 #   google    — Gmail/Calendar/Drive skill deps
 #
-# When bumping: update HERMES_REF here AND packages/hermes/VERSION, open a PR.
-ARG HERMES_REF=v2026.5.16
+# When bumping: update HERMES_VERSION here AND packages/hermes/VERSION, open a PR.
+#
+# 2026-07-02 (#hermes-017-fleet-bake): pinned to the 0.17.0 PyPI WHEEL, not the
+# git ref. The wheel ships `web_dist` (the dashboard SPA bundle) which the
+# `git+https` build omits — required for the supervised main-profile dashboard
+# (see memory project_hermes_017_upgrade_canary + CLAUDE.md §9.3/§15.6). The four
+# patch_upstream_* / patch_openai_sdk scripts below patch the same
+# site-packages files regardless of install source (wheel lands in the same
+# /usr/local/lib/python3.12/site-packages tree) and are tripwire'd, so a moved
+# 0.17 symbol fails the build loudly rather than silently no-op'ing.
+ARG HERMES_VERSION=0.17.0
 RUN pip install --no-cache-dir \
-        "hermes-agent[cron,cli,mcp,web,messaging,google] @ git+https://github.com/NousResearch/hermes-agent.git@${HERMES_REF}" \
+        "hermes-agent[cron,cli,mcp,web,messaging,google]==${HERMES_VERSION}" \
     && hermes --version || true
+
+# -----------------------------------------------------------------------------
+# Extra runtime deps that the 0.17 wheel does NOT pull (empty `Required-by` on
+# the golden home box) but that the relay / voice / native-app stack needs. These
+# are the "other hotfixes that made it work" — hand-`pip install`ed on home during
+# the 2026-06-29 canary. Pinned to the exact versions home runs so the fleet
+# reproduces the proven-good environment. A build-time freeze diff (see
+# debug/0702 spec §2.2) gates completeness against the home golden freeze.
+#   local STT for relay voice ..... faster-whisper ctranslate2 onnxruntime av
+#                                   tokenizers huggingface_hub hf-xet
+#   QR pairing (`hermes pair`) .... segno
+#   browser / desktop CDP tools ... playwright (pulls pyee + greenlet)
+#   document + OCR ingest ......... PyMuPDF pypdf pytesseract python-docx
+#                                   openpyxl reportlab pillow lxml
+#                                   beautifulsoup4 Markdown
+#   AWS (remote secret import) .... boto3
+# NOTE: pytesseract needs the `tesseract-ocr` OS binary and playwright needs a
+# browser binary for full function — canary verifies whether the relay/desktop
+# tooling requires them locally or drives a remote CDP (browser_supervisor.py is
+# a CDP client). Add apt/`playwright install` here only if the canary shows a gap.
+RUN pip install --no-cache-dir \
+        "faster-whisper==1.2.1" "ctranslate2==4.8.0" "onnxruntime==1.27.0" \
+        "av==17.1.0" "tokenizers==0.23.1" "huggingface_hub==1.21.0" "hf-xet==1.5.1" \
+        "segno==1.6.6" \
+        "playwright==1.60.0" \
+        "PyMuPDF==1.27.2.3" "pypdf==6.14.2" "pytesseract==0.3.13" \
+        "python-docx==1.2.0" "openpyxl==3.1.5" "reportlab==5.0.0" "pillow==12.2.0" \
+        "lxml==6.1.1" "beautifulsoup4==4.15.0" "Markdown==3.10.2" \
+        "boto3==1.42.89" \
+    && python3 -c "import faster_whisper, playwright, segno, fitz, pytesseract, docx, openpyxl, boto3; print('extra relay/voice/doc deps OK')"
 
 # =============================================================================
 # Patch: teach the Slack adapter (and base SUPPORTED_DOCUMENT_TYPES) about
@@ -272,6 +311,28 @@ RUN git clone https://github.com/stephenschoettler/hermes-lcm /opt/hermes-lcm \
 # $HERMES_HOME/profiles/main/plugins/one-alfred at first boot (main only —
 # workers/heavy never speak to Sir directly so they don't need the bridge).
 COPY packages/hermes/plugins/one-alfred /opt/one-alfred
+
+# =============================================================================
+# Bake the hermes-relay plugin (native-app bridge).
+# =============================================================================
+# Axiom Labs `Codename-11/hermes-relay` (manifest version 1.2.1). Provides QR
+# pairing (`hermes pair`), relay sessions, android_* + desktop_* remote control,
+# provider-native realtime voice, and dashboard management — the stack behind the
+# Hermes native/Android app + voice on home.
+#
+# VENDORED (not git-cloned) because: (a) the repo has no `v1.2.1` tag — its
+# release tags top out at v0.7.0 and the plugin's manifest `version` is a
+# separate scheme, so there is no clean pinnable ref; (b) vendoring the exact
+# tree the proven-good home box runs guarantees the fleet is byte-identical to
+# the golden reference. Source captured from home.alfred.black on 2026-07-02
+# (4.5M, 238 files, no node_modules). See packages/hermes/plugins/hermes-relay/
+# VENDORED.md for provenance. Refresh by re-capturing from the golden box.
+#
+# Lives at /opt/hermes-relay in the image; supervisor.sh deploys it into
+# $HERMES_HOME/profiles/main/plugins/hermes-relay at boot (main only) and creates
+# the `plugin` import-shim symlink (the plugin uses absolute `plugin.*` imports
+# but installs under hermes-relay/).
+COPY packages/hermes/plugins/hermes-relay /opt/hermes-relay
 
 # =============================================================================
 # Bake @paperclipai/mcp-server (Paperclip's first-party MCP server).
