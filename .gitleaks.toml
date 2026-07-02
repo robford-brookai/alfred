@@ -30,6 +30,11 @@ paths = [
   # Env + config templates ship example/placeholder values by design.
   '''(^|/)\.env\.example$''',
   '''.*\.example$''',
+  # Vendored 3rd-party plugin (Codename-11/hermes-relay), captured byte-identical
+  # from the golden box and secrets-scanned before vendoring (see that dir's
+  # VENDORED.md). Carries PUBLIC OAuth client IDs (e.g. XAI_OAUTH_CLIENT_ID — a
+  # UUID app identifier sent in every auth URL, not a secret) + test fixtures.
+  '''packages/hermes/plugins/hermes-relay/.*''',
 ]
 regexes = [
   # Documentation IP ranges (RFC 5737) and shared-address space (RFC 6598)

@@ -470,6 +470,37 @@ def main() -> int:
     # no-op since config_path does not exist — kept for the symmetric path.)
     if config_path.exists():
         print(f"[render] config.yaml present at {config_path} — preserved (operator-owned)")
+        # Fleet-bake migration (2026-07-02): config.yaml is preserved verbatim,
+        # so the template's kanban.dispatch_in_gateway=false never reaches an
+        # EXISTING tenant — its stale `true` keeps the 0.17 kanban dispatcher
+        # crashing the workers gateway (kanban.db.init.lock PermissionError under
+        # the sandbox uid). Alfred doesn't use the kanban board, so force-disable
+        # it. Targeted + idempotent: `dispatch_in_gateway` is a kanban-only key,
+        # so this touches nothing else the operator may have edited.
+        try:
+            _cfg_text = config_path.read_text(encoding="utf-8")
+            _cfg_new = re.sub(
+                r"(dispatch_in_gateway:\s*)(?i:true)\b", r"\1false", _cfg_text
+            )
+            if "dispatch_in_gateway" not in _cfg_new:
+                # No kanban dispatch key at all — an operator-preserved config that
+                # predates the template's kanban block (e.g. home's codex-builder).
+                # 0.17 DEFAULTS dispatch_in_gateway ON, so the gateway runs the
+                # kanban dispatcher → 60s "tick failed" log noise (#175). Append a
+                # disabled top-level block (config is a flat top-level mapping, so
+                # a col-0 append is valid YAML).
+                _cfg_new = _cfg_new.rstrip("\n") + (
+                    "\n\n# alfred-black: kanban dispatcher disabled — Alfred uses"
+                    " Paperclip + Plane, not the kanban board.\n"
+                    "kanban:\n  dispatch_in_gateway: false\n"
+                )
+            if _cfg_new != _cfg_text:
+                config_path.write_text(_cfg_new, encoding="utf-8")
+                print(
+                    f"[render] MIGRATED kanban.dispatch_in_gateway -> false in {config_path}"
+                )
+        except OSError as exc:
+            print(f"[render] WARN: kanban migration skipped for {config_path}: {exc}")
     else:
         config_out = _preserve_switched_model_block(config_out, config_path)
         config_path.write_text(config_out, encoding="utf-8")
@@ -490,6 +521,11 @@ def main() -> int:
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
+        # Relay/dashboard voice: Groq Whisper STT + the OpenAI realtime model.
+        # env_file (.env) surfaces these into the init container; empty on a
+        # tenant that doesn't use voice (harmless).
+        openai_realtime_model=os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime-2"),
+        groq_api_key=os.environ.get("GROQ_API_KEY", ""),
         composio_api_key=os.environ.get("COMPOSIO_API_KEY", ""),
         composio_user_id=os.environ.get("COMPOSIO_USER_ID", ""),
         aas_api_key=os.environ.get("AAS_API_KEY", ""),

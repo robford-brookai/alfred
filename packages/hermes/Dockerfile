@@ -134,11 +134,59 @@ RUN echo 'codex-builder:x:10001:10001::/hermes-state/profiles/codex-builder:/usr
 #               channels
 #   google    — Gmail/Calendar/Drive skill deps
 #
-# When bumping: update HERMES_REF here AND packages/hermes/VERSION, open a PR.
-ARG HERMES_REF=v2026.5.16
+# When bumping: update HERMES_VERSION here AND packages/hermes/VERSION, open a PR.
+#
+# 2026-07-02 (#hermes-017-fleet-bake): pinned to the 0.17.0 PyPI WHEEL, not the
+# git ref. The wheel ships `web_dist` (the dashboard SPA bundle) which the
+# `git+https` build omits — required for the supervised main-profile dashboard
+# (see memory project_hermes_017_upgrade_canary + CLAUDE.md §9.3/§15.6). The four
+# patch_upstream_* / patch_openai_sdk scripts below patch the same
+# site-packages files regardless of install source (wheel lands in the same
+# /usr/local/lib/python3.12/site-packages tree) and are tripwire'd, so a moved
+# 0.17 symbol fails the build loudly rather than silently no-op'ing.
+ARG HERMES_VERSION=0.17.0
+# Pin the openai SDK to the version the golden home box runs (2.24.0). Hermes
+# 0.17's openai floor lets pip float openai to a NEWER release that reintroduced
+# the null-output loop (`for output in response.output:`) — the first canary
+# builds resolved that buggy version (home, installed 2026-06-30, got the
+# null-safe 2.24.0). Pinning reproduces home exactly AND makes the build
+# reproducible regardless of openai's release cadence. The verify-only tripwire
+# below still guards against a future bump reintroducing the bug.
+ARG OPENAI_VERSION=2.24.0
 RUN pip install --no-cache-dir \
-        "hermes-agent[cron,cli,mcp,web,messaging,google] @ git+https://github.com/NousResearch/hermes-agent.git@${HERMES_REF}" \
+        "hermes-agent[cron,cli,mcp,web,messaging,google]==${HERMES_VERSION}" \
+        "openai==${OPENAI_VERSION}" \
     && hermes --version || true
+
+# -----------------------------------------------------------------------------
+# Extra runtime deps that the 0.17 wheel does NOT pull (empty `Required-by` on
+# the golden home box) but that the relay / voice / native-app stack needs. These
+# are the "other hotfixes that made it work" — hand-`pip install`ed on home during
+# the 2026-06-29 canary. Pinned to the exact versions home runs so the fleet
+# reproduces the proven-good environment. A build-time freeze diff (see
+# debug/0702 spec §2.2) gates completeness against the home golden freeze.
+#   local STT for relay voice ..... faster-whisper ctranslate2 onnxruntime av
+#                                   tokenizers huggingface_hub hf-xet
+#   QR pairing (`hermes pair`) .... segno
+#   browser / desktop CDP tools ... playwright (pulls pyee + greenlet)
+#   document + OCR ingest ......... PyMuPDF pypdf pytesseract python-docx
+#                                   openpyxl reportlab pillow lxml
+#                                   beautifulsoup4 Markdown
+#   AWS (remote secret import) .... boto3
+# NOTE: pytesseract needs the `tesseract-ocr` OS binary and playwright needs a
+# browser binary for full function — canary verifies whether the relay/desktop
+# tooling requires them locally or drives a remote CDP (browser_supervisor.py is
+# a CDP client). Add apt/`playwright install` here only if the canary shows a gap.
+RUN pip install --no-cache-dir \
+        "faster-whisper==1.2.1" "ctranslate2==4.8.0" "onnxruntime==1.27.0" \
+        "av==17.1.0" "tokenizers==0.23.1" "huggingface_hub==1.21.0" "hf-xet==1.5.1" \
+        "segno==1.6.6" \
+        "playwright==1.60.0" \
+        "PyMuPDF==1.27.2.3" "pypdf==6.14.2" "pytesseract==0.3.13" \
+        "python-docx==1.2.0" "openpyxl==3.1.5" "reportlab==5.0.0" "pillow==12.2.0" \
+        "lxml==6.1.1" "beautifulsoup4==4.15.0" "Markdown==3.10.2" \
+        "boto3==1.42.89" \
+    && python3 -c "import faster_whisper, playwright, segno, fitz, pytesseract, docx, openpyxl, boto3; print('extra relay/voice/doc deps OK')"
 
 # =============================================================================
 # Patch: teach the Slack adapter (and base SUPPORTED_DOCUMENT_TYPES) about
@@ -153,24 +201,29 @@ RUN pip install --no-cache-dir \
 #
 # Sir 2026-05-26 — local-only durable fix for an upstream Hermes bug.
 COPY packages/hermes/patch_upstream_hermes.py /tmp/patch_upstream_hermes.py
+# 0.17 note: base.py's SUPPORTED_DOCUMENT_TYPES already includes .html/.htm
+# natively (the base.py patch self-skips); only the slack.py TEXT_INJECT_EXTENSIONS
+# hunk still needs the patch. Tripwires are format-agnostic (just assert `.html`
+# is present in each file) so they survive 0.17's dict-vs-set reshaping.
 RUN python3 /tmp/patch_upstream_hermes.py \
- && grep -q '"\.html": "text/html"' /usr/local/lib/python3.12/site-packages/gateway/platforms/base.py \
- && grep -q '"\.html", "\.htm"' /usr/local/lib/python3.12/site-packages/gateway/platforms/slack.py \
+ && grep -q '"\.html"' /usr/local/lib/python3.12/site-packages/gateway/platforms/base.py \
+ && grep -q '"\.html"' /usr/local/lib/python3.12/site-packages/gateway/platforms/slack.py \
  && rm /tmp/patch_upstream_hermes.py
 
 # =============================================================================
 # Patch: handle response.output=None in the openai SDK's streaming parser.
-# 2026-05-27 OpenAI changed Codex's streaming shape — response snapshots
-# during response.output_item.added now carry output=None instead of [].
-# The SDK's parse_response() crashes with 'NoneType' object is not
-# iterable at openai/lib/_parsing/_responses.py:61, taking down every
-# Hermes-main turn using openai-codex. One-line fix: `for output in
-# (response.output or []):`. See patch_openai_sdk.py for the full
-# rationale; the script is idempotent and tripwire'd so a future openai
-# SDK bump that moves or fixes this line fails the build loudly.
+# 2026-05-27 OpenAI changed Codex's streaming shape — response snapshots carry
+# output=None instead of []. parse_response() then crashes with 'NoneType' is
+# not iterable, taking down every Hermes-main turn on openai-codex. One-line
+# fix: `for output in (response.output or []):`.
 #
-# Sir 2026-05-27 — local-only durable fix for an upstream openai SDK
-# bug exposed by an OpenAI backend contract change.
+# STILL REQUIRED under 0.17 (canary-confirmed 2026-07-02): the openai SDK 2.24.0
+# that Hermes 0.17 pins STILL ships the buggy `for output in response.output:`
+# in stock form — the fix was NOT adopted upstream. (An earlier canary iteration
+# wrongly assumed 0.17 made this obsolete; the golden home box merely had it
+# patched already, so home looked "fixed". Restored here.) The script is
+# idempotent (skips if already patched) + tripwire'd (fails loudly if the
+# needle moves in a future SDK).
 COPY packages/hermes/patch_openai_sdk.py /tmp/patch_openai_sdk.py
 RUN python3 /tmp/patch_openai_sdk.py \
  && grep -q 'for output in (response.output or \[\]):' \
@@ -178,33 +231,24 @@ RUN python3 /tmp/patch_openai_sdk.py \
  && rm /tmp/patch_openai_sdk.py
 
 # =============================================================================
-# Patch: profile-dir-aware parent chmod in hermes_cli/auth.py.
+# Patch: profile-dir-aware chmod in hermes_constants.secure_parent_dir (GH #119).
 #
-# Upstream Hermes' _save_auth_store (and the qwen + nous shared-store
-# variants) hard-codes `os.chmod(<path>.parent, 0o700)` on every save —
-# token refresh, provider login, write-back of cached creds. In
-# alfred-black HERMES_HOME points at a *profile* dir
-# (e.g. /hermes-state/profiles/codex-builder) whose mode is owned by the
-# init container. PR #118 set the codex-builder profile dir to 0o711 so
-# the paperclip-hermes adapter (uid 1000) can traverse to .env for the
-# gateway's API_SERVER_KEY; an auth-store save then resets it back to
-# 0o700 and the next paperclip → :18793 dispatch 401s with
-# hermes_auth_failed / invalid_api_key (GH #119). The companion fix —
-# HERMES_HOME_MODE=0711 in the codex-builder profile .env — handles the
-# `_secure_dir(home)` path that fires at every CLI startup; this patch
-# handles the auth-save path that fires at every token write.
-#
-# See patch_upstream_hermes_auth.py for the full rationale. The patch is
-# idempotent + tripwire'd; a future HERMES_REF bump that moves any of
-# the three needles fails the build loudly.
-#
-# Sir 2026-05-30 — durable fix for GH #119.
+# STILL REQUIRED under 0.17, re-authored for the refactor (canary-confirmed
+# 2026-07-02): 0.17 moved the auth-store parent-dir tighten out of
+# hermes_cli/auth.py into hermes_constants.secure_parent_dir(), but it STILL
+# `os.chmod(parent, 0o700)` — it only added a guard that refuses `/` and
+# top-level dirs (#25821), which does NOT cover a profile dir like
+# `/hermes-state/profiles/codex-builder` (4 path parts). So an auth-store save
+# still resets the codex-builder profile dir (0o711, needed for the
+# paperclip-hermes uid-1000 adapter to read .env for the gateway API_SERVER_KEY)
+# back to 0o700 → next paperclip → :18793 dispatch 401s. The patch teaches
+# secure_parent_dir to skip Hermes profile dirs (…/profiles/<name>); the #25821
+# root/top-level guard is preserved. Single site → covers all auth-save callers.
+# Idempotent (sentinel) + tripwire'd; needle verified byte-for-byte vs home 0.17.
 COPY packages/hermes/patch_upstream_hermes_auth.py /tmp/patch_upstream_hermes_auth.py
 RUN python3 /tmp/patch_upstream_hermes_auth.py \
- && grep -q "alfred-black: profile-dir-aware chmod" \
-        /usr/local/lib/python3.12/site-packages/hermes_cli/auth.py \
- && grep -q "_alfred_is_profile_dir" \
-        /usr/local/lib/python3.12/site-packages/hermes_cli/auth.py \
+ && grep -q "alfred-black: never chmod a Hermes profile dir" \
+        /usr/local/lib/python3.12/site-packages/hermes_constants.py \
  && rm /tmp/patch_upstream_hermes_auth.py
 
 # =============================================================================
@@ -272,6 +316,28 @@ RUN git clone https://github.com/stephenschoettler/hermes-lcm /opt/hermes-lcm \
 # $HERMES_HOME/profiles/main/plugins/one-alfred at first boot (main only —
 # workers/heavy never speak to Sir directly so they don't need the bridge).
 COPY packages/hermes/plugins/one-alfred /opt/one-alfred
+
+# =============================================================================
+# Bake the hermes-relay plugin (native-app bridge).
+# =============================================================================
+# Axiom Labs `Codename-11/hermes-relay` (manifest version 1.2.1). Provides QR
+# pairing (`hermes pair`), relay sessions, android_* + desktop_* remote control,
+# provider-native realtime voice, and dashboard management — the stack behind the
+# Hermes native/Android app + voice on home.
+#
+# VENDORED (not git-cloned) because: (a) the repo has no `v1.2.1` tag — its
+# release tags top out at v0.7.0 and the plugin's manifest `version` is a
+# separate scheme, so there is no clean pinnable ref; (b) vendoring the exact
+# tree the proven-good home box runs guarantees the fleet is byte-identical to
+# the golden reference. Source captured from home.alfred.black on 2026-07-02
+# (4.5M, 238 files, no node_modules). See packages/hermes/plugins/hermes-relay/
+# VENDORED.md for provenance. Refresh by re-capturing from the golden box.
+#
+# Lives at /opt/hermes-relay in the image; supervisor.sh deploys it into
+# $HERMES_HOME/profiles/main/plugins/hermes-relay at boot (main only) and creates
+# the `plugin` import-shim symlink (the plugin uses absolute `plugin.*` imports
+# but installs under hermes-relay/).
+COPY packages/hermes/plugins/hermes-relay /opt/hermes-relay
 
 # =============================================================================
 # Bake @paperclipai/mcp-server (Paperclip's first-party MCP server).

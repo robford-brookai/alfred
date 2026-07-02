@@ -13,6 +13,11 @@ on:
       - "packages/hermes/**"
       - ".github/workflows/build-hermes.yml"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to push (default: latest). Use a throwaway tag (e.g. 0.17-canary) to build a canary WITHOUT clobbering production :latest."
+        required: false
+        default: "latest"
 
 concurrency:
   group: build-hermes-${{ github.ref }}
@@ -45,6 +50,6 @@ jobs:
           file: packages/hermes/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ssdavidai00/alfred-black-hermes:latest
+          tags: ssdavidai00/alfred-black-hermes:${{ github.event.inputs.tag || 'latest' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
