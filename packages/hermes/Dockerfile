@@ -205,13 +205,18 @@ RUN python3 /tmp/patch_upstream_hermes.py \
 # response.output=None in the openai SDK streaming parser — OBSOLETE in 0.17.
 # The 2026-05-27 crash (`for output in response.output:` → 'NoneType' not
 # iterable) that patch_openai_sdk.py fixed on 0.14's SDK is already fixed
-# upstream in the openai SDK 2.24.0 that Hermes 0.17 bundles: the line now
-# reads `for output in (response.output or []):` natively. So we DROP the
-# patch and keep a verify-only tripwire — if a future SDK regresses this, the
-# build fails loudly and we restore the patch (kept in-tree at
-# packages/hermes/patch_openai_sdk.py).
-RUN grep -q 'for output in (response.output or \[\]):' \
-        /usr/local/lib/python3.12/site-packages/openai/lib/_parsing/_responses.py
+# upstream in the openai SDK that Hermes 0.17 bundles. So we DROP the patch and
+# verify by asserting the OLD BUGGY form is ABSENT — a negative check that is
+# stable across openai SDK point releases (matching the exact fixed line was
+# brittle: the freshly-resolved SDK phrases the fix differently than home's
+# 2.24.0, which broke the first canary build). If a future SDK regresses to the
+# null-unsafe loop, this fails the build loudly and patch_openai_sdk.py (kept
+# in-tree) is restored.
+RUN if grep -qF 'for output in response.output:' \
+        /usr/local/lib/python3.12/site-packages/openai/lib/_parsing/_responses.py; then \
+      echo "FATAL: openai SDK regressed to null-unsafe 'for output in response.output:' — restore patch_openai_sdk.py" >&2; \
+      exit 1; \
+    fi
 
 # =============================================================================
 # profile-dir-aware parent chmod in hermes_cli/auth.py — NEEDLE REMOVED in 0.17.
