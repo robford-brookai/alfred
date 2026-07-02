@@ -145,8 +145,17 @@ RUN echo 'codex-builder:x:10001:10001::/hermes-state/profiles/codex-builder:/usr
 # /usr/local/lib/python3.12/site-packages tree) and are tripwire'd, so a moved
 # 0.17 symbol fails the build loudly rather than silently no-op'ing.
 ARG HERMES_VERSION=0.17.0
+# Pin the openai SDK to the version the golden home box runs (2.24.0). Hermes
+# 0.17's openai floor lets pip float openai to a NEWER release that reintroduced
+# the null-output loop (`for output in response.output:`) — the first canary
+# builds resolved that buggy version (home, installed 2026-06-30, got the
+# null-safe 2.24.0). Pinning reproduces home exactly AND makes the build
+# reproducible regardless of openai's release cadence. The verify-only tripwire
+# below still guards against a future bump reintroducing the bug.
+ARG OPENAI_VERSION=2.24.0
 RUN pip install --no-cache-dir \
         "hermes-agent[cron,cli,mcp,web,messaging,google]==${HERMES_VERSION}" \
+        "openai==${OPENAI_VERSION}" \
     && hermes --version || true
 
 # -----------------------------------------------------------------------------

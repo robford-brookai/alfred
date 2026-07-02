@@ -12,6 +12,10 @@
 # 0.17.0 == the fleet bake  (was v2026.5.16 == 0.14.0, git-installed).
 HERMES_VERSION=0.17.0
 
+# openai SDK is pinned to 2.24.0 (Dockerfile ARG OPENAI_VERSION) — the version
+# the golden home box runs. Hermes 0.17's floor otherwise floats openai to a
+# release that reintroduced the null-output crash. Bump only with a canary.
+#
 # hermes-relay native-app plugin is VENDORED at
 # packages/hermes/plugins/hermes-relay (no upstream tag maps to manifest 1.2.1;
 # captured from the golden home box). See that dir's VENDORED.md.
