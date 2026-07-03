@@ -527,24 +527,33 @@ export function registerAgentRoutes(): void {
       }
     }
 
+    // Hermes `cron create` CLI. The retired OpenClaw interface
+    // (`cron add --agent/--at/--delete-after-run/--message/--best-effort-deliver
+    // /--announce/--channel/--to/--no-deliver/--json`) no longer exists — the
+    // current Hermes CLI rejects every one of those flags, so this endpoint
+    // (and thus spawn_alfred_task) returned HTTP 500 on every tenant until this
+    // fix. Real grammar (identical on 0.14 + 0.17):
+    //   hermes -p main cron create <schedule> <prompt> --name <n> --deliver <t>
+    // - `schedule` is a POSITIONAL duration string. Sub-minute is unsupported
+    //   (`'5s'` → "Invalid schedule"), so the floor is 1m; the old `--at 1s`
+    //   "≈immediate" becomes "≈1m" (the smallest one-shot the scheduler takes).
+    // - One-shot DURATION jobs auto-remove after firing (no --delete-after-run).
+    // - Delivery is a single `--deliver` target: `<platform>:<chat_id>` when
+    //   announcing to a resolved channel, `origin` as a fallback, `local` for a
+    //   silent background run (no external DM).
+    const scheduleMinutes = Math.max(1, Math.ceil(atSeconds / 60));
     const args = [
       ...HERMES_CMD,
-      "cron", "add",
+      "-p", "main",
+      "cron", "create",
+      `${scheduleMinutes}m`,
+      task,
       "--name", jobName,
-      "--agent", "main",
-      "--at", `${atSeconds}s`,
-      "--delete-after-run",
-      "--message", task,
-      "--best-effort-deliver",
-      "--json",
     ];
     if (announce) {
-      args.push("--announce", "--channel", effectiveChannel);
-      if (toTarget) {
-        args.push("--to", toTarget);
-      }
+      args.push("--deliver", toTarget ? `${effectiveChannel}:${toTarget}` : "origin");
     } else {
-      args.push("--no-deliver");
+      args.push("--deliver", "local");
     }
 
     try {
