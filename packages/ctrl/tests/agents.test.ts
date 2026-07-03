@@ -222,3 +222,54 @@ describe("PATCH /api/v1/admin/agents/:agentId/model", () => {
     assert.ok(data.agent?.id === "main");
   });
 });
+
+describe("POST /api/v1/agents/main/task (spawn_alfred_task)", () => {
+  // Regression: the handler shelled out to the retired OpenClaw cron interface
+  // (`cron add --agent/--at/--delete-after-run/--message/--announce/--channel/
+  // --to/--best-effort-deliver/--no-deliver/--json`). The current Hermes CLI
+  // rejects every one of those flags, so spawn_alfred_task returned HTTP 500 on
+  // every tenant. These lock in the current `cron create` grammar.
+  const cronArgv = () =>
+    execFileFn.mock.calls
+      .map((c: any) => c.arguments)
+      .find((a: any) => Array.isArray(a?.[1]) && a[1].includes("cron"))?.[1] as string[] | undefined;
+
+  it("uses `hermes -p main cron create <schedule> <prompt> --deliver`, not the retired `cron add` flags", async () => {
+    execFileStdout = "Created job: abc123\n  Name: unit-test-job\n  Schedule: once in 1m";
+    execFileFn.mock.resetCalls();
+    const { status } = await req("POST", "/api/v1/agents/main/task", {
+      task: "do the thing", announce: false, name: "unit-test-job",
+    });
+    assert.strictEqual(status, 202);
+    const argv = cronArgv();
+    assert.ok(argv, "expected an execFile call invoking the hermes cron CLI");
+    assert.ok(argv!.includes("create"), "must use `cron create`");
+    assert.ok(!argv!.includes("add"), "must NOT use the retired `cron add`");
+    assert.ok(argv!.includes("-p") && argv![argv!.indexOf("-p") + 1] === "main", "targets `-p main`");
+    assert.ok(argv!.some((x) => /^\d+m$/.test(x)), "positional duration schedule (e.g. `1m`)");
+    assert.ok(argv!.includes("do the thing"), "prompt passed as a positional, not `--message`");
+    // announce:false → silent local delivery
+    const di = argv!.indexOf("--deliver");
+    assert.ok(di >= 0 && argv![di + 1] === "local", "announce:false → `--deliver local`");
+    // every retired flag must be gone
+    for (const dead of [
+      "--agent", "--at", "--delete-after-run", "--message",
+      "--best-effort-deliver", "--announce", "--channel", "--to",
+      "--no-deliver", "--json",
+    ]) {
+      assert.ok(!argv!.includes(dead), `retired flag ${dead} must not be passed`);
+    }
+  });
+
+  it("maps an announced delivery to `--deliver <channel>:<to>`", async () => {
+    execFileStdout = "Created job: x";
+    execFileFn.mock.resetCalls();
+    const { status } = await req("POST", "/api/v1/agents/main/task", {
+      task: "hi", announce: true, channel: "telegram", to: "12345",
+    });
+    assert.strictEqual(status, 202);
+    const argv = cronArgv();
+    const di = argv!.indexOf("--deliver");
+    assert.ok(di >= 0 && argv![di + 1] === "telegram:12345", "announce + to → `--deliver telegram:12345`");
+  });
+});
