@@ -86,6 +86,17 @@ WINDOW_SECONDS: dict[str, int] = {
     "per_matter_per_day": 24 * 60 * 60,
 }
 
+# Infra "matters" that are pipeline FUNNELS, not real business matters. Signal
+# extraction routes the ENTIRE inbound stream through one synthetic
+# ``matter_path`` ("signal-extract"), so the per_matter_per_day noise-control
+# cap — meant to stop a single *business* matter being spammed — would instead
+# throttle all extraction, fleet-wide, to 50 LLM calls/day (and then pin at
+# 50/50, because deferred events never mark processed and re-list every tick).
+# Exempt these funnels: they stay gated by per_task_per_day (per event — stops
+# one event looping), the tenant-wide per_minute/hour/day windows, and the
+# provider-429 backoff (the real constraint, per the module note above).
+INFRA_MATTERS: frozenset[str] = frozenset({"signal-extract"})
+
 # Longest window — anything older than this can be pruned every read.
 MAX_WINDOW_SECONDS = max(WINDOW_SECONDS.values())
 
@@ -310,7 +321,15 @@ class RateGuard:
         #      c) per_minute, per_hour, per_day  (tenant-wide rolling windows)
         check_order = [
             ("per_task_per_day", task_path, None),
-            ("per_matter_per_day", None, matter_path),
+            # per_matter_per_day is noise-control for a single *business* matter.
+            # Infra funnel matters (signal-extract) route the whole pipeline
+            # through one matter_path, so applying it there throttles all
+            # extraction to 50/day — exempt them (see INFRA_MATTERS).
+            *(
+                []
+                if matter_path in INFRA_MATTERS
+                else [("per_matter_per_day", None, matter_path)]
+            ),
             ("per_minute", None, None),
             ("per_hour", None, None),
             ("per_day", None, None),
