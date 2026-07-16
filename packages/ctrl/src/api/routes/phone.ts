@@ -7,6 +7,7 @@
 //   Phase 6 (#224)  POST /api/v1/phone/sms             — outbound SMS
 //   Phase 6 (#224)  POST /api/v1/phone/call            — outbound call
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { addRoute } from "../server.js";
 import { sendJson, ValidationError } from "../errors.js";
@@ -73,6 +74,7 @@ const SAAS_INTERNAL_URL =
   process.env.SAAS_INTERNAL_URL ?? "https://alfred.black";
 const VOICE_BRIDGE_INTERNAL_TOKEN =
   process.env.VOICE_BRIDGE_INTERNAL_TOKEN ?? "";
+const DOMAIN = (process.env.DOMAIN ?? "").trim();
 
 // 60 s in-memory cache of the voice context bundle. Voice calls fetch this on
 // connect and we don't want to re-walk the vault per call.
@@ -609,10 +611,106 @@ function readInstanceMeta(): InstanceMeta | null {
   const tenantId = process.env.TENANT_ID ?? "";
   const phoneNumber =
     process.env.AGENTPHONE_PHONE_NUMBER ??
+    process.env.TWILIO_VOICE_FROM_NUMBER ??
     process.env.TWILIO_PHONE_NUMBER ??
     "";
   if (!tenantId || !phoneNumber) return null;
   return { tenantId, phoneNumber };
+}
+
+function readTwilioCredentials(): { accountSid: string; authToken: string } | null {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID ?? "";
+  const authToken = process.env.TWILIO_AUTH_TOKEN ?? "";
+  if (!accountSid || !authToken) return null;
+  return { accountSid, authToken };
+}
+
+function xmlEscape(value: string): string {
+  return value.replace(/[&<>"']/g, (c) =>
+    c === "&"
+      ? "&amp;"
+      : c === "<"
+        ? "&lt;"
+        : c === ">"
+          ? "&gt;"
+          : c === '"'
+            ? "&quot;"
+            : "&apos;",
+  );
+}
+
+export function computeVoiceBridgeSig(tenantId: string, token: string): string {
+  return crypto.createHmac("sha256", token).update(tenantId).digest("hex");
+}
+
+export function buildOutboundCallTwiml(opts: {
+  tenantId: string;
+  mode: "tts" | "realtime";
+  message: string;
+  from: string;
+  to: string;
+  internalToken: string;
+  domain?: string;
+}): string {
+  if (opts.mode === "tts") {
+    return (
+      '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      "<Response>\n" +
+      `  <Say>${xmlEscape(opts.message)}</Say>\n` +
+      "</Response>\n"
+    );
+  }
+
+  const host = opts.domain?.trim() ? `voice.${opts.domain.trim()}` : "voice.example";
+  const wssUrl = `wss://${host}/voice/${encodeURIComponent(opts.tenantId)}`;
+  const sig = computeVoiceBridgeSig(opts.tenantId, opts.internalToken);
+  return (
+    '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    "<Response>\n" +
+    "  <Connect>\n" +
+    `    <Stream url="${wssUrl}">\n` +
+    `      <Parameter name="sig" value="${sig}"/>\n` +
+    '      <Parameter name="initiator" value="alfred"/>\n' +
+    `      <Parameter name="intent" value="${xmlEscape(opts.message)}"/>\n` +
+    `      <Parameter name="from" value="${xmlEscape(opts.from)}"/>\n` +
+    `      <Parameter name="to" value="${xmlEscape(opts.to)}"/>\n` +
+    "    </Stream>\n" +
+    "  </Connect>\n" +
+    "</Response>\n"
+  );
+}
+
+async function placeTwilioCall(opts: {
+  accountSid: string;
+  authToken: string;
+  from: string;
+  to: string;
+  twiml: string;
+}): Promise<string | undefined> {
+  const credentials = Buffer.from(`${opts.accountSid}:${opts.authToken}`).toString("base64");
+  const form = new URLSearchParams({
+    To: opts.to,
+    From: opts.from,
+    Twiml: opts.twiml,
+  });
+  const resp = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(opts.accountSid)}/Calls.json`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${credentials}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: form.toString(),
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  const text = await resp.text().catch(() => "");
+  if (!resp.ok) {
+    throw new Error(`Twilio Calls.json ${resp.status}: ${text.slice(0, 500)}`);
+  }
+  const parsed = text ? JSON.parse(text) : {};
+  return typeof parsed?.sid === "string" ? parsed.sid : undefined;
 }
 
 async function shipSmsViaSaas(opts: {
@@ -1006,6 +1104,14 @@ export function registerPhoneRoutes(): void {
       });
       return;
     }
+    const twilio = readTwilioCredentials();
+    if (!twilio) {
+      sendJson(res, 409, {
+        status: "no-twilio-credentials",
+        error: "TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set",
+      });
+      return;
+    }
     if (!VOICE_BRIDGE_INTERNAL_TOKEN) {
       sendJson(res, 500, {
         status: "misconfigured",
@@ -1014,37 +1120,28 @@ export function registerPhoneRoutes(): void {
       return;
     }
 
+    const twiml = buildOutboundCallTwiml({
+      tenantId: meta.tenantId,
+      mode,
+      message,
+      from: meta.phoneNumber,
+      to,
+      internalToken: VOICE_BRIDGE_INTERNAL_TOKEN,
+      domain: DOMAIN,
+    });
+
     let sid: string | undefined;
     try {
-      const res2 = await fetch(
-        `${SAAS_INTERNAL_URL}/api/internal/twilio/initiate-call`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${VOICE_BRIDGE_INTERNAL_TOKEN}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            tenantId: meta.tenantId,
-            to,
-            mode,
-            message,
-          }),
-          signal: AbortSignal.timeout(8_000),
-        },
-      );
-      if (!res2.ok) {
-        sendJson(res, 502, {
-          status: "saas-call-failed",
-          error: `${res2.status}: ${await res2.text().catch(() => "")}`,
-        });
-        return;
-      }
-      const out: any = await res2.json().catch(() => ({}));
-      sid = out?.sid;
+      sid = await placeTwilioCall({
+        accountSid: twilio.accountSid,
+        authToken: twilio.authToken,
+        from: meta.phoneNumber,
+        to,
+        twiml,
+      });
     } catch (err: any) {
       sendJson(res, 502, {
-        status: "saas-unreachable",
+        status: "twilio-call-failed",
         error: err?.message ?? String(err),
       });
       return;
