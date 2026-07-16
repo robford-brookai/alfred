@@ -1,425 +1,104 @@
 ---
 title: "Backups & Recovery"
-description: "Backup system overview and disaster recovery"
+description: "Application-level backup contract and restore drill"
 icon: "shield"
 ---
 
-Alfred uses restic with S3-compatible storage for automated encrypted backups. Backups run daily and include the entire vault, configuration, and worker state.
+Alfred Black's default `docker compose up -d` stack does not start an automatic backup service. The supported contract is application-level backup of Docker named volumes, with encrypted off-VM storage operated by the instance owner.
 
-## Backup System Overview
+For the canonical runbook, see `deploy/BACKUPS.md` in the repository.
+
+## Contract Summary
 
 <CardGroup cols={3}>
-  <Card title="What's Backed Up" icon="database">
-    Vault, config, worker state, OpenClaw devices
+  <Card title="Backup Model" icon="database">
+    Operator-run Docker named-volume archives, encrypted before leaving the VM.
   </Card>
-  <Card title="Encryption" icon="lock">
-    AES-256 with restic password
+  <Card title="Default Behavior" icon="power-off">
+    No backup sidecar starts by default and no backup credentials are required for first boot.
   </Card>
-  <Card title="Retention" icon="calendar">
-    7 daily, 4 weekly, 6 monthly
-  </Card>
-</CardGroup>
-
-## What Gets Backed Up
-
-The backup includes:
-- **Vault**: All records (`/mnt/encrypted/vault/`)
-- **Configuration**: `.env`, `openclaw.json`
-- **State**: Worker state files, mutation logs, audit logs
-- **OpenClaw**: Device pairing data, tokens
-
-**Excluded**:
-- Temporal database (workflow history — not critical)
-- Docker volumes (ephemeral)
-- Logs older than 7 days
-
-Total backup size: typically 50-500 MB depending on vault size.
-
-## Automated Backups
-
-Backups run automatically every day at 3:00 AM UTC via cron job.
-
-**Duration**: 2-5 minutes depending on vault size and S3 latency.
-
-**Impact**: Containers are stopped during backup for consistency, then restarted automatically. Downtime: ~30 seconds.
-
-<Note>
-The backup script stops all containers, runs `restic backup`, and restarts containers. This ensures a consistent snapshot.
-</Note>
-
-## Manual Backup
-
-Trigger an immediate backup:
-
-```bash
-curl -X POST https://alfred-acme.tailnet.ts.net:3100/api/backup/create \
-  -H "X-API-Key: YOUR_API_KEY"
-```
-
-**Response (202 Accepted):**
-
-```json
-{
-  "ok": true,
-  "message": "Backup started",
-  "job_id": "backup_20260226_153000"
-}
-```
-
-<Warning>
-The backup runs asynchronously. The API returns immediately (202) without waiting for completion. Monitor logs to verify success.
-</Warning>
-
-Check backup status in logs:
-
-```bash
-curl -N https://alfred-acme.tailnet.ts.net:3100/api/logs/stream?service=backup&tail=50 \
-  -H "X-API-Key: YOUR_API_KEY"
-```
-
-**Log output:**
-
-```
-data: {"timestamp":"2026-02-26T15:30:00Z","service":"backup","level":"info","message":"Stopping containers..."}
-data: {"timestamp":"2026-02-26T15:30:05Z","service":"backup","level":"info","message":"Running restic backup..."}
-data: {"timestamp":"2026-02-26T15:32:30Z","service":"backup","level":"info","message":"Backup complete: 245 MB in 2m 30s"}
-data: {"timestamp":"2026-02-26T15:32:35Z","service":"backup","level":"info","message":"Restarting containers..."}
-data: {"timestamp":"2026-02-26T15:32:40Z","service":"backup","level":"info","message":"Backup finished successfully"}
-```
-
-## Listing Snapshots
-
-Get all backup snapshots:
-
-```bash
-curl -X GET https://alfred-acme.tailnet.ts.net:3100/api/backup/snapshots \
-  -H "X-API-Key: YOUR_API_KEY"
-```
-
-**Response:**
-
-```json
-{
-  "ok": true,
-  "snapshots": [
-    {
-      "id": "a3f5b2c1",
-      "time": "2026-02-26T03:00:00Z",
-      "hostname": "alfred-acme",
-      "paths": ["/mnt/encrypted"],
-      "tags": ["automated"],
-      "size_mb": 245
-    },
-    {
-      "id": "b7d9e8f2",
-      "time": "2026-02-25T03:00:00Z",
-      "hostname": "alfred-acme",
-      "paths": ["/mnt/encrypted"],
-      "tags": ["automated"],
-      "size_mb": 243
-    },
-    {
-      "id": "c2a1f4e3",
-      "time": "2026-02-26T15:30:00Z",
-      "hostname": "alfred-acme",
-      "paths": ["/mnt/encrypted"],
-      "tags": ["manual"],
-      "size_mb": 246
-    }
-  ],
-  "total_snapshots": 18,
-  "total_size_gb": 4.3
-}
-```
-
-### Snapshot Tags
-
-- `automated` — daily cron job
-- `manual` — triggered via API
-
-## Retention Policy
-
-Restic prunes old snapshots automatically:
-
-| Keep | Period |
-|------|--------|
-| **7** | Daily (last 7 days) |
-| **4** | Weekly (last 4 weeks) |
-| **6** | Monthly (last 6 months) |
-
-Older snapshots are deleted after each backup to save storage.
-
-<Tip>
-Retention policy is configured in the backup script (`/opt/alfred/backup.sh`). Modify it via SSH if you need longer retention.
-</Tip>
-
-## Restoring from Backup
-
-<Warning>
-Restoration requires SSH access. The API does not provide restore endpoints (destructive operation).
-</Warning>
-
-### Full Restore
-
-<Steps>
-  <Step title="SSH into the instance">
-    ```bash
-    ssh deploy@alfred-acme.tailnet.ts.net
-    ```
-  </Step>
-  <Step title="Stop all containers">
-    ```bash
-    cd /opt/alfred
-    docker compose down
-    ```
-  </Step>
-  <Step title="List available snapshots">
-    ```bash
-    restic -r s3:s3.amazonaws.com/your-bucket snapshots
-    ```
-  </Step>
-  <Step title="Restore the snapshot">
-    ```bash
-    # Replace SNAPSHOT_ID with the ID from step 3
-    restic -r s3:s3.amazonaws.com/your-bucket restore SNAPSHOT_ID \
-      --target /mnt/encrypted
-    ```
-  </Step>
-  <Step title="Verify restoration">
-    ```bash
-    ls -lh /mnt/encrypted/vault
-    cat /mnt/encrypted/.env
-    ```
-  </Step>
-  <Step title="Restart containers">
-    ```bash
-    docker compose up -d
-    ```
-  </Step>
-  <Step title="Check health">
-    ```bash
-    curl https://alfred-acme.tailnet.ts.net:3100/api/health \
-      -H "X-API-Key: YOUR_API_KEY"
-    ```
-  </Step>
-</Steps>
-
-### Partial Restore
-
-Restore only specific files:
-
-```bash
-# Restore just the vault
-restic -r s3:s3.amazonaws.com/your-bucket restore SNAPSHOT_ID \
-  --target /tmp/restore \
-  --include /mnt/encrypted/vault
-
-# Copy to live location
-cp -r /tmp/restore/mnt/encrypted/vault/* /mnt/encrypted/vault/
-```
-
-### Restore to a New Instance
-
-<Steps>
-  <Step title="Provision a new instance">
-    Use alfred-ctrl to create a new instance
-  </Step>
-  <Step title="SSH into the new instance">
-    ```bash
-    ssh deploy@new-instance.tailnet.ts.net
-    ```
-  </Step>
-  <Step title="Stop containers">
-    ```bash
-    cd /opt/alfred
-    docker compose down
-    ```
-  </Step>
-  <Step title="Configure restic with old credentials">
-    ```bash
-    export AWS_ACCESS_KEY_ID="old-access-key"
-    export AWS_SECRET_ACCESS_KEY="old-secret-key"
-    export RESTIC_PASSWORD="old-restic-password"
-    ```
-  </Step>
-  <Step title="Restore from old snapshot">
-    ```bash
-    restic -r s3:s3.amazonaws.com/old-bucket restore SNAPSHOT_ID \
-      --target /mnt/encrypted
-    ```
-  </Step>
-  <Step title="Update .env with new instance details">
-    ```bash
-    nano /mnt/encrypted/.env
-    # Update TAILSCALE_HOSTNAME, AAS_API_KEY, etc.
-    ```
-  </Step>
-  <Step title="Restart containers">
-    ```bash
-    docker compose up -d
-    ```
-  </Step>
-</Steps>
-
-## Disaster Recovery Scenarios
-
-### Corrupted Vault
-
-<Steps>
-  <Step title="Identify the last good snapshot">
-    ```bash
-    curl -X GET https://alfred-acme.tailnet.ts.net:3100/api/backup/snapshots \
-      -H "X-API-Key: YOUR_API_KEY"
-    ```
-  </Step>
-  <Step title="SSH and restore">
-    Follow the full restore process above
-  </Step>
-  <Step title="Verify vault integrity">
-    ```bash
-    curl -X POST https://alfred-acme.tailnet.ts.net:3100/api/workers/janitor/scan \
-      -H "X-API-Key: YOUR_API_KEY"
-    ```
-  </Step>
-</Steps>
-
-### Lost API Key
-
-If `AAS_API_KEY` is lost and you can't access the API:
-
-<Steps>
-  <Step title="SSH into the instance">
-    ```bash
-    ssh deploy@alfred-acme.tailnet.ts.net
-    ```
-  </Step>
-  <Step title="Regenerate the API key">
-    ```bash
-    NEW_KEY=$(openssl rand -hex 32)
-    echo "AAS_API_KEY=$NEW_KEY" >> /mnt/encrypted/.env
-    ```
-  </Step>
-  <Step title="Restart AAS">
-    ```bash
-    cd /opt/alfred
-    docker compose restart alfred-aas
-    ```
-  </Step>
-  <Step title="Test the new key">
-    ```bash
-    curl https://alfred-acme.tailnet.ts.net:3100/api/health \
-      -H "X-API-Key: $NEW_KEY"
-    ```
-  </Step>
-</Steps>
-
-### Server Failure
-
-If the server is completely lost:
-
-<Steps>
-  <Step title="Provision a new instance">
-    ```bash
-    node dist/index.mjs provision alfred-recovery
-    ```
-  </Step>
-  <Step title="SSH and configure restic">
-    Use old backup credentials
-  </Step>
-  <Step title="Restore from the latest snapshot">
-    Follow "Restore to a New Instance" workflow
-  </Step>
-  <Step title="Update Tailscale">
-    Re-authenticate Tailscale with the same hostname
-  </Step>
-</Steps>
-
-## Backup Verification
-
-Test backups monthly:
-
-<Steps>
-  <Step title="List snapshots">
-    ```bash
-    curl -X GET https://alfred-acme.tailnet.ts.net:3100/api/backup/snapshots \
-      -H "X-API-Key: YOUR_API_KEY"
-    ```
-  </Step>
-  <Step title="Verify snapshot integrity">
-    ```bash
-    ssh deploy@alfred-acme.tailnet.ts.net
-    restic -r s3:s3.amazonaws.com/your-bucket check
-    ```
-  </Step>
-  <Step title="Test partial restore">
-    ```bash
-    restic -r s3:s3.amazonaws.com/your-bucket restore latest \
-      --target /tmp/test-restore \
-      --include /mnt/encrypted/vault/person
-    ```
-  </Step>
-  <Step title="Verify contents">
-    ```bash
-    ls /tmp/test-restore/mnt/encrypted/vault/person
-    ```
-  </Step>
-  <Step title="Cleanup">
-    ```bash
-    rm -rf /tmp/test-restore
-    ```
-  </Step>
-</Steps>
-
-## Troubleshooting
-
-### Backup Failed
-
-Check logs:
-
-```bash
-curl -N https://alfred-acme.tailnet.ts.net:3100/api/logs/stream?service=backup&tail=100 \
-  -H "X-API-Key: YOUR_API_KEY"
-```
-
-Common errors:
-- **S3 credentials invalid**: Update `HETZNER_S3_*` in `.env`
-- **Restic password wrong**: Update `RESTIC_PASSWORD` in `.env`
-- **Network timeout**: Retry or check S3 endpoint
-
-### Snapshot List Empty
-
-Verify restic repository:
-
-```bash
-ssh deploy@alfred-acme.tailnet.ts.net
-restic -r s3:s3.amazonaws.com/your-bucket snapshots
-```
-
-If no repository exists, initialize it:
-
-```bash
-restic -r s3:s3.amazonaws.com/your-bucket init
-```
-
-### Restore Incomplete
-
-Check restic logs:
-
-```bash
-restic -r s3:s3.amazonaws.com/your-bucket restore SNAPSHOT_ID \
-  --target /tmp/restore \
-  --verbose
-```
-
-If files are missing, the snapshot may be corrupted. Try an older snapshot.
-
-## Next Steps
-
-<CardGroup cols={2}>
-  <Card title="Configuration" icon="sliders" href="/guides/configuration">
-    Configure backup settings (S3, retention)
-  </Card>
-  <Card title="Monitoring" icon="chart-line" href="/guides/monitoring">
-    Monitor backup job logs
+  <Card title="Restore Drill" icon="shield-check">
+    `./scripts/restore-drill.sh` verifies a vault file and SQLite state artifact round trip.
   </Card>
 </CardGroup>
+
+Recommended targets when a daily backup schedule is configured:
+
+| Target | Expectation |
+| --- | --- |
+| RPO | 24 hours, or less when an operator triggers a manual backup before risky work. |
+| RTO | 2 hours for a full single-VM rebuild once a fresh VM, DNS, `.env`, and encrypted backup bundle are available. |
+| Consistency | Best when the stack is stopped before archiving volumes. Online database snapshots may be crash-consistent only. |
+
+## Critical Volumes
+
+The backup set must include every named volume reported by:
+
+```bash
+docker compose config --volumes
+```
+
+Critical principal-facing and recovery-critical volumes include:
+
+- `vault_data` — vault records, decisions, briefings, and daybook output.
+- `state_data` — `alfred-state.db`, WAL, observations, signals, and audit state.
+- `ingest_data` — `ingest.db` raw stream events.
+- `hermes_data` — Hermes profiles, sessions, channel state, and generated profile config.
+- `alfred_data` — shared Alfred runtime data and generated gateway material.
+- `vaultwarden_data` — secrets store data.
+- `web_db_data` — web/auth database.
+- `caddy_data` — Let's Encrypt account and certificate material.
+- `sure_pgdata` — Sure finance database, when Sure is used.
+- `paperclip_data` — Paperclip company, issue, and agent state, when Paperclip is used.
+- `files_data` — file-store blobs, if present in a deployment variant.
+
+The full classification table is in `deploy/BACKUPS.md`.
+
+## Manual Backup Shape
+
+Use the runbook rather than ad-hoc copying. The short form is:
+
+1. Create a private backup directory outside the repository checkout.
+2. Stop the stack for the cleanest snapshot.
+3. Archive every named Docker volume into that directory.
+4. Copy `docker-compose.yaml`, `.env`, and the `docker compose config --volumes` output into the bundle.
+5. Restart the stack.
+6. Encrypt the bundle before uploading it off-VM.
+
+Do not publish `.env`, Vaultwarden data, Age private keys, object-store credentials, or raw tenant contents in comments, logs, or CI output.
+
+## Restore
+
+Restore is intentionally SSH/manual because it is destructive. At a high level:
+
+1. Provision a fresh VM and clone the repository.
+2. Decrypt the backup bundle into a private local directory.
+3. Stop any existing stack.
+4. Recreate each named volume and extract its matching archive.
+5. Start the stack.
+6. Verify Desk, Brief, Vault records, file artifacts, `ctrl-api` state, Vaultwarden, and HTTPS.
+
+See `deploy/BACKUPS.md` for exact commands.
+
+## Smoke Evidence
+
+Every PR that changes backup behavior or documentation should include:
+
+```bash
+./scripts/restore-drill.sh
+python - <<'PY'
+import yaml
+from pathlib import Path
+yaml.safe_load(Path('docker-compose.yaml').read_text())
+print('compose-yaml-parse-ok')
+PY
+```
+
+When Docker is available, also run:
+
+```bash
+docker compose config
+docker compose config --volumes
+```
+
+The restore drill is non-destructive. It uses temporary directories and proves that the backup mechanics preserve both a user-facing vault file and a SQLite state-bearing artifact.
