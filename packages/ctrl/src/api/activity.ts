@@ -6,6 +6,55 @@
  * activity items for the SaaS dashboard.
  */
 
+import { getStateDb } from "../db/state.js";
+
+export interface DurableActivityFeed {
+  items: Array<Record<string, unknown>>;
+  generated_at: string;
+  newest_event_ts: string | null;
+  sources: Array<{ name: string; ok: boolean; count: number }>;
+  partial: boolean;
+}
+
+/** Read the durable activity ledger. Store failures are represented in-band. */
+export function readDurableActivity(limit: number): DurableActivityFeed {
+  const generated_at = new Date().toISOString();
+  try {
+    const rows = getStateDb()
+      .prepare("SELECT * FROM audit ORDER BY ts DESC LIMIT ?")
+      .all(limit) as Array<Record<string, unknown>>;
+    const items = rows.map((row) => {
+      const event = String(row.action_type ?? "activity");
+      const sourceTool = inferTool(String(row.source ?? ""));
+      const actorTool = inferTool(String(row.actor ?? ""));
+      return {
+        ...row,
+        timestamp: String(row.ts ?? ""),
+        tool: sourceTool !== "system" ? sourceTool : actorTool !== "system" ? actorTool : inferTool(event),
+        level: "info" as const,
+        event,
+        message: String(row.summary ?? humanizeEventName(event)),
+      };
+    });
+    return {
+      items,
+      generated_at,
+      newest_event_ts: items.length ? String(items[0].ts) : null,
+      sources: [{ name: "audit", ok: true, count: items.length }],
+      partial: false,
+    };
+  } catch (err) {
+    console.error(`[activity] audit read failed: ${err}`);
+    return {
+      items: [],
+      generated_at,
+      newest_event_ts: null,
+      sources: [{ name: "audit", ok: false, count: 0 }],
+      partial: true,
+    };
+  }
+}
+
 export interface ActivityItem {
   timestamp: string;
   tool: "curator" | "janitor" | "distiller" | "surveyor" | "system";
