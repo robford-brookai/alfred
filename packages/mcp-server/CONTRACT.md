@@ -172,12 +172,12 @@ other than its own `oauth.sqlite`; everything else is HTTP to ctrl-api.
 
 | Consumer | Transport | Apps consumed | Wiring |
 |---|---|---|---|
-| Hermes `main` profile | stdio | `alfred`, `sure` (trimmed), `vaultwarden`, `execute`, `hass` (trimmed), `files`, `paperclip-admin` | `packages/hermes/hermes-config.yaml.njk` `mcp_servers:` blocks spawn `{{mcp_stdio_dir}}/dist/bin/stdio-app.js <app>`; `paperclip-admin` is backfilled by `packages/hermes/init/render_mcp_servers.py` (ADD-only mutator, every init boot) |
+| Hermes `main` profile | stdio | `alfred`, `sure` (trimmed), `vaultwarden`, `execute`, `hass` (trimmed), `files`, `paperclip-admin` | `packages/hermes/hermes-config.yaml.njk` `mcp_servers:` blocks spawn `{{mcp_stdio_dir}}/dist/bin/stdio-app.js <app>`; `paperclip-admin` is backfilled by `packages/hermes/init/render_mcp_servers.py` (idempotent mutator, every init boot) |
 | Hermes `workers` profile | stdio | `alfred`, `sure` (full), `vaultwarden`, `execute`, `files`, `paperclip-admin` | same |
 | Hermes `heavy` profile | stdio | `alfred`, `sure`, `vaultwarden`, `execute` | same (no `hass`/`files`/`paperclip-admin`) |
 | Hermes `codex-builder` profile | — | none | `mcp_servers: {}` by design (sealed runtime) |
 | claude.ai Custom Connectors | HTTP + OAuth | any app, one connector per app | `https://mcp.<DOMAIN>/<app>/mcp` |
-| voice-bridge | HTTP + master secret | `alfred`, `sure`, `vaultwarden`, `execute`, `hermes` (its `APPS` list at `packages/voice-bridge/src/mcp-clients.ts:36` still names `plane` — stale; that URL now 404s) | `MCP_SERVER_URL=http://mcp-server:8787` in compose |
+| voice-bridge | HTTP + master secret | `alfred`, `sure`, `vaultwarden`, `execute`, `hermes` | `MCP_SERVER_URL=http://mcp-server:8787` in compose |
 | Third-party voice vendors (ElevenLabs, LiveKit) | HTTP + scoped token | one app per token | connector URL from `/manage/tokens` responses |
 | ctrl-api + web dashboard | HTTP `/manage/*` | token management only | see P5 chain |
 
@@ -229,11 +229,10 @@ Hermes auto-namespaces every tool as `mcp_<server>_<tool>` (e.g.
    Bearer is equivalent to what `/approve` could already mint; keep the
    bypass and the form gated by the SAME secret.
 8. **`plane` stays out** unless Plane returns to the deployed stack (removal:
-   PR #279). Surfaces that still reference it (voice-bridge `APPS`,
-   `skills/plane-mcp-skill.md`, stale header comments in `stdio-app.ts` /
-   `hermes.ts` / `files.ts` naming plane in the app list, and the
-   user-visible "one of: sure, plane" bad-resource error string in
-   `src/oauth/provider.ts` `authorize()`)
+   PR #279). Surfaces that still reference it (`skills/plane-mcp-skill.md`,
+   stale header comments in `stdio-app.ts` / `hermes.ts` / `files.ts` naming
+   plane in the app list, and the user-visible "one of: sure, plane"
+   bad-resource error string in `src/oauth/provider.ts` `authorize()`)
    are dormant, not load-bearing.
 9. **Session transports are in-memory, single-replica.** Scaling to multiple
    replicas requires a shared session store (noted in `index.ts`); do not
