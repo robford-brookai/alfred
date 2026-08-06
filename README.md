@@ -75,12 +75,14 @@ VM you control** — your data never leaves it.
 ### The Hermes runtime
 
 The reasoning core is **[Hermes Agent](https://github.com/NousResearch/hermes-agent)**
-— a single, isolated AI runtime. It runs in two profiles from one image: a
+— a single, isolated AI runtime. It runs in three profiles from one image: a
 **main** profile for the conversations you actually have (Telegram, Slack,
 email, web chat), and a concurrency-capped **workers** profile for the
 background agents that never bother you (the curator, the learner, ephemeral
-task runners). You choose the underlying model (any OpenRouter model, or your
-own provider) — Alfred is not locked to one LLM.
+task runners), and a **heavy** profile for the reasoning-bound work
+(onboarding and the nightly Reflection). Each profile runs its own OpenAI
+Codex model tier, so you can spend reasoning where it matters and stay cheap
+everywhere else.
 
 ### Memory — a vault you can read, and databases you don't have to
 
@@ -163,13 +165,12 @@ Composio; Alfred just calls the tools.
 
 ### Sidecars — the back office
 
-Three best-in-class open-source services ship in the stack so Alfred can manage
+Two best-in-class open-source services ship in the stack so Alfred can manage
 real domains of your life, not just notes:
 
 | Sidecar | What it is | What Alfred uses it for |
 |---|---|---|
 | **[Sure](https://github.com/we-promise/sure)** | Personal finance | Accounts, transactions, budgets — Alfred categorises and reconciles your money |
-| **[Plane](https://plane.so)** | Project management | The durable task/issue backbone behind Matters and chores |
 | **[Vaultwarden](https://github.com/dani-garcia/vaultwarden)** | Secrets manager | A real vault for credentials Alfred (and you) need |
 
 ---
@@ -182,7 +183,7 @@ that share one engine:
 | | What it is | Where |
 |---|---|---|
 | **`alfred-vault`** | The pip-installable CLI. Turns *any* agentic runtime into an ambient butler over an Obsidian vault — the Curator / Janitor / Distiller / Surveyor workers + a Temporal workflow engine. Runs on a Mac Mini under your desk or any box with Python. | [`packages/alfred-vault/`](packages/alfred-vault/) · [`pip install alfred-vault`](https://pypi.org/project/alfred-vault/) |
-| **Alfred Black** | The full self-hosted **platform**: the web dashboard, the Hermes runtime, the signal pipeline, durable workflows, multi-channel delivery, and the Sure / Plane / Vaultwarden sidecars — brought up with a single `docker compose up`, served on your own domain over HTTPS. | this repo · *the rest of `packages/`* |
+| **Alfred Black** | The full self-hosted **platform**: the web dashboard, the Hermes runtime, the signal pipeline, durable workflows, multi-channel delivery, and the Sure / Vaultwarden sidecars — brought up with a single `docker compose up`, served on your own domain over HTTPS. | this repo · *the rest of `packages/`* |
 
 > **2026-05-20 — the platform release.** The project that gave you the `alfred`
 > CLI is now a complete, deployable platform. `alfred-vault` is the same
@@ -212,7 +213,7 @@ Three commands. Drop a file into `inbox/` and it's handled. Full docs:
 ### 2 · The full platform (Alfred Black)
 
 If you want the whole product — web dashboard, Hermes runtime, the daily Brief,
-multi-channel delivery, and the Sure / Plane / Vaultwarden sidecars — on a VM
+multi-channel delivery, and the Sure / Vaultwarden sidecars — on a VM
 you control: read on. You bring a fresh Linux VM and a domain; the stack brings
 everything else and serves the web app on your domain over HTTPS. No managed
 provisioning, no billing — **one repo, one VM, one `docker compose up`.**
@@ -234,9 +235,10 @@ provisioning, no billing — **one repo, one VM, one `docker compose up`.**
   at the VM (see below).
 - **`git`** and **`openssl`** on the VM (`openssl` is used by the bootstrap
   script to generate secrets).
-- **API keys**: `OPENROUTER_API_KEY` and `COMPOSIO_API_KEY` are required.
-  `ANTHROPIC_API_KEY` is **optional** — Hermes routes LLM traffic through
-  OpenRouter by default.
+- **API keys**: `COMPOSIO_API_KEY` is required (it connects Gmail, Calendar and
+  the rest of the third-party surface). Hermes itself does **not** use an LLM
+  API key — it authenticates to OpenAI Codex over OAuth, which the first-run
+  setup walks you through.
 - **Google OAuth credentials** (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`) —
   **optional**. Onboarding does *not* need them: with `COMPOSIO_API_KEY` set,
   "Start onboarding" connects Gmail through Composio's managed Google OAuth,
@@ -255,7 +257,7 @@ provisioning, no billing — **one repo, one VM, one `docker compose up`.**
 | Disk     | 80 GB   | 80 GB+      |
 
 The full stack — web app, ctrl-api, Temporal, Ollama, Hermes, the vault
-daemon, Plane (~13 containers), Sure (~5 containers), and Vaultwarden — is
+daemon, Sure (~5 containers), and Vaultwarden — is
 memory-hungry.
 
 > At-rest disk encryption is **not** applied by the stack (no LUKS). The
@@ -274,7 +276,6 @@ your VM's public IP, where `example.com` is your domain:
 |---------|---------------------|-----------------------------------|
 | `@`     | `example.com`       | the Alfred Black dashboard (SPA)  |
 | `api`   | `api.example.com`   | the Alfred Black API server       |
-| `plane` | `plane.example.com` | Plane (project management)        |
 | `sure`  | `sure.example.com`  | Sure (personal finance)           |
 | `vault` | `vault.example.com` | Vaultwarden (secrets manager)     |
 | `mcp`   | `mcp.example.com`   | MCP server (Claude connector)     |
@@ -304,9 +305,9 @@ docker compose up -d
 no Node needed — and runs a containerized wizard that:
 
 - prompts every required and optional value, with inline help;
-- **validates your API keys live** — it actually calls OpenRouter, Anthropic,
-  and Composio and tells you immediately if a key is wrong;
-- lets you **pick the Hermes models** from OpenRouter's live model catalogue;
+- **validates your API keys live** — it actually calls the providers you have
+  configured (Composio and friends) and tells you immediately if a key is wrong;
+- lets you set the three Hermes Codex model tiers (main / workers / heavy);
 - if you opt into your own Google OAuth client, prints the exact **redirect
   URI** to register for your domain (skip it to use Composio-managed Gmail);
 - generates every auto-secret with a cryptographically-secure
@@ -323,8 +324,8 @@ offers to run `docker compose up -d` for you.
 ```sh
 cp .env.example .env
 # Edit .env — fill the "USER MUST FILL" block: DOMAIN, ACME_EMAIL, OWNER_NAME,
-# OPENROUTER_API_KEY, COMPOSIO_API_KEY (+ optional ANTHROPIC_API_KEY, Mailgun,
-# GOOGLE_CLIENT_*, HERMES_MAIN_MODEL / HERMES_WORKERS_MODEL)
+# OWNER_EMAIL, COMPOSIO_API_KEY (+ optional Mailgun, GOOGLE_CLIENT_*, and the
+# HERMES_{MAIN,WORKERS,HEAVY}_MODEL Codex tiers)
 nano .env
 ./scripts/bootstrap.sh    # generate every auto-secret into .env (run once)
 docker compose up -d
@@ -332,7 +333,7 @@ docker compose up -d
 
 `scripts/bootstrap.sh` validates the required fields and appends every
 auto-generated secret (`AAS_API_KEY`, `COLUMN_ENCRYPTION_KEY`, `JWT_SECRET`, the
-Hermes gateway token, Plane/Sure datastore credentials, the Vaultwarden
+Hermes gateway token, the Sure datastore credentials, the Vaultwarden
 admin token, …) with `openssl rand -hex 32`. It is idempotent — re-running never
 overwrites an existing value.
 
@@ -363,11 +364,22 @@ Onboarding is automatic and runs once, for the owner:
 
 ### Choosing the LLM models
 
-`HERMES_MAIN_MODEL` (user-facing chat) and `HERMES_WORKERS_MODEL` (background
-agents) take **bare OpenRouter model IDs**. Defaults: `x-ai/grok-4.3` and
-`openai/gpt-4.1-nano`. To change one, edit `.env` and run
-`docker compose up -d --force-recreate init hermes`. Hermes also supports
-switching provider entirely (`docker compose exec hermes hermes model`).
+Hermes is **Codex-only**. `HERMES_MAIN_MODEL` (Sir's chat),
+`HERMES_WORKERS_MODEL` (background agents) and `HERMES_HEAVY_MODEL`
+(onboarding + the nightly Reflection) take OpenAI Codex model tiers.
+Defaults: `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-sol`.
+
+To change one, edit `.env` and run
+`docker compose up -d --force-recreate init hermes`.
+
+Two gotchas worth knowing:
+
+- `config.yaml` is **seed-once and operator-owned** — init writes it if
+  absent and never overwrites it. On an existing tenant, editing `.env` alone
+  does nothing until the profile is re-rendered; edit the profile's
+  `config.yaml` (`model.default`) for an immediate change.
+- The `.env` values **override** the code defaults, so a stale entry there
+  silently wins on a reseed. Keep the two in step.
 
 ### Meeting-bot transcription
 
@@ -429,7 +441,7 @@ host ports (`:80`/`:443`).
   vault and the operational SQLite stores, and enforces the read/write contract.
 - **Data** — Hermes (AI runtime), Temporal, Ollama, the vault daemon
   (`packages/alfred-vault`, run as `alfred-worker`), `alfred-learn` (the signal
-  pipeline + the learner), the MCP server, plus the Sure / Plane / Vaultwarden
+  pipeline + the learner), the MCP server, plus the Sure / Vaultwarden
   sidecars.
 
 Four-store memory model: **vault** (markdown — the principal's surface),
