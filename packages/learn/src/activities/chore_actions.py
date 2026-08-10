@@ -325,33 +325,159 @@ async def save_digest_to_vault(matter_slug: str, digest: str) -> None:
 # ---------------------------------------------------------------------------
 
 @activity.defn
-async def send_chore_notification(chore_slug: str, session_id: str, message: str) -> None:
-    """Send a notification via the existing tenant notification route.
+async def send_chore_notification(
+    chore_slug: str,
+    session_id: str,  # kept for Temporal backward compat; dead param since 2026-05-25
+    message: str,
+    notify_channel: str | None = None,
+) -> dict:
+    """Send a notification via the tenant notification route.
 
-    POSTs to ctrl-api /api/v1/notifications, which forwards to the OpenClaw
-    gateway via the sessions_send tool. The session_id determines which
-    Alfred session (and therefore which delivery channel) receives the
-    message.
+    POSTs to ctrl-api /api/v1/notifications.  When the chore record carries a
+    ``notify_channel`` frontmatter field (or the caller passes it as the 4th
+    positional arg), the value is parsed as ``platform:destination`` and
+    forwarded to ctrl-api as separate ``channel`` (platform enum) and ``to``
+    (chat/channel id) fields, matching the alfredDeliver.ts body contract::
+
+        body: { message, channel?: "auto"|"telegram"|"slack"|"email", to?: str }
+
+    ``channel`` selects the adapter; ``to`` is the recipient id.  They are
+    separate fields and a destination id in ``channel`` falls to the default
+    case in ``deliverByChannel()`` (``channel=<id> has no delivery adapter``).
+
+    **notify_channel format** (the same convention as commitment_register's
+    ``projection`` field in CLAUDE.md §6.1)::
+
+        slack:C0123456789        → channel="slack",    to="C0123456789"
+        telegram:-1001234567     → channel="telegram",  to="-1001234567"
+        email:user@example.com   → channel="email",     to="user@example.com"
+
+    **Bare values with no ``:`` separator are treated as unset** and the
+    notification falls through to ctrl-api's home-channel default
+    (SLACK_HOME_CHANNEL / TELEGRAM_HOME_CHANNEL).  Guessing the platform from
+    an id's shape is how you get a Telegram id posted to Slack — treat
+    unparseable values as unset rather than guessing.  Invalid platform names
+    (anything not in ``slack|telegram|email``) are likewise treated as unset.
+
+    When absent or unparseable, ``channel`` and ``to`` are both omitted and
+    ctrl-api applies its home-channel default.  If neither a home channel nor
+    an explicit destination resolves, ctrl-api returns 424 and this activity
+    raises, surfacing the misconfiguration visibly for Temporal retry.
+
+    The ``session_id`` positional parameter is kept for backward compatibility
+    with in-flight generated chore workflows that call this activity with
+    positional ``args=[slug, session_id, msg]``.  It has been a no-op since
+    the 2026-05-25 "one-Alfred" hard switch: ctrl-api's notifications route
+    never forwarded it downstream.
+
+    Temporal replay safety: ``notify_channel`` is a regular optional positional
+    parameter with a default of ``None``.  Existing callers that dispatch via
+    ``args=[slug, session_id, msg]`` (three positional args) keep working
+    unchanged — Python fills the fourth arg from its default.  The activity
+    name is unchanged, so Temporal's history lookup still resolves.  No
+    workflow code needs to change for the activity contract to stay valid.
+    (Temporal's SDK rejects keyword-only ``*`` args entirely; see
+    temporalio/activity.py:601.)
+
+    Returns structured delivery evidence::
+
+        {
+            "delivered": bool,
+            "destination": str,    # "platform:id" or "auto"
+            "http_status": int,
+            "error": str | None,
+        }
+
+    Raises ``httpx.HTTPStatusError`` on non-2xx so Temporal can retry on
+    transient failures.  Transport errors propagate as-is.
     """
+    _VALID_PLATFORMS = frozenset({"slack", "telegram", "email"})
+
+    def _parse_notify_channel(raw: str) -> tuple[str, str] | None:
+        """Parse 'platform:destination' → (platform, destination) or None.
+
+        Returns None when the value has no colon, uses an unrecognised platform,
+        or produces an empty destination.  None causes the caller to omit
+        channel + to entirely, falling through to ctrl-api's home default.
+        """
+        if ":" not in raw:
+            return None
+        platform, _, dest = raw.partition(":")
+        platform = platform.strip().lower()
+        dest = dest.strip()
+        if platform not in _VALID_PLATFORMS or not dest:
+            return None
+        return platform, dest
+
     config = load_config()
     api_key = os.environ.get("AAS_API_KEY", "")
-    url = f"{config.alfred_ctrl_url}/api/v1/notifications"
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    async with httpx.AsyncClient(timeout=30.0) as http:
+
+    # 1. Resolve destination: kwarg → chore frontmatter → omit (ctrl-api decides).
+    # Priority: explicit kwarg wins; else read from the chore record so
+    # generated chores on live tenants benefit without any code change.
+    resolved_raw = notify_channel
+    if resolved_raw is None:
         try:
-            await http.post(
-                url,
-                json={
-                    "message": f"[Chore: {chore_slug}]\n\n{message}",
-                    "urgency": "normal",
-                    "session_id": session_id,
-                },
-                headers=headers,
-            )
+            ch_client = VaultClient(config)
+            try:
+                record = await ch_client.read_record(f"chore/{chore_slug}.md")
+                ch = (record.get("frontmatter") or {}).get("notify_channel")
+                if ch and isinstance(ch, str) and ch.strip():
+                    resolved_raw = ch.strip()
+            finally:
+                await ch_client.close()
         except Exception:
-            # Best-effort: don't fail the whole chore run because notification
-            # delivery flaked.
-            pass
+            pass  # treat as no channel — ctrl-api home default applies
+
+    # 2. Parse platform:destination. Unparseable → fall through to ctrl-api auto.
+    parsed = _parse_notify_channel(resolved_raw) if resolved_raw else None
+    destination = f"{parsed[0]}:{parsed[1]}" if parsed else "auto"
+
+    # 3. Build POST body; split channel (platform enum) and to (recipient id)
+    #    per alfredDeliver.ts:35.  Omit both when no explicit destination so
+    #    ctrl-api's home-channel default is the sole fallback.
+    body: dict[str, Any] = {
+        "message": f"[Chore: {chore_slug}]\n\n{message}",
+        "urgency": "normal",
+    }
+    if parsed:
+        body["channel"] = parsed[0]  # platform enum: "slack"|"telegram"|"email"
+        body["to"] = parsed[1]       # recipient id
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+    async with httpx.AsyncClient(timeout=30.0) as http:
+        resp = await http.post(
+            f"{config.alfred_ctrl_url}/api/v1/notifications",
+            json=body,
+            headers=headers,
+        )
+        resp.raise_for_status()
+
+    # 3. Best-effort: append a delivery audit line to the chore body so the
+    #    resolved destination is auditable even when the calling workflow's
+    #    record_chore_run summary omits it.  Generated chore workflows that do
+    #    not capture the return value of this activity still get the destination
+    #    recorded in the vault run log.
+    ts_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        audit_client = VaultClient(config)
+        try:
+            await audit_client.update_record(
+                f"chore/{chore_slug}.md",
+                f"\n- {ts_iso}: notification sent → destination={destination}",
+            )
+        finally:
+            await audit_client.close()
+    except Exception:
+        pass  # best-effort; vault offline must not block delivery evidence
+
+    return {
+        "delivered": True,
+        "destination": destination,
+        "http_status": resp.status_code,
+        "error": None,
+    }
 
 
 # ---------------------------------------------------------------------------
