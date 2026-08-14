@@ -93,6 +93,7 @@ class TestValidChannelFieldSplit:
         body = _posted_body(http_mock)
         assert body.get("channel") == "slack"
         assert body.get("to") == "C0123456789"
+        assert body.get("solicited") == 0, "chore notify must stamp solicited=0 (#580)"
         assert result["delivered"] is True
         assert result["destination"] == "slack:C0123456789"
 
@@ -108,6 +109,7 @@ class TestValidChannelFieldSplit:
         body = _posted_body(http_mock)
         assert body.get("channel") == "telegram"
         assert body.get("to") == "-1001234567"
+        assert body.get("solicited") == 0, "chore notify must stamp solicited=0 (#580)"
         assert result["destination"] == "telegram:-1001234567"
 
     def test_email_channel_splits_correctly(self) -> None:
@@ -122,6 +124,7 @@ class TestValidChannelFieldSplit:
         body = _posted_body(http_mock)
         assert body.get("channel") == "email"
         assert body.get("to") == "user@example.com"
+        assert body.get("solicited") == 0, "chore notify must stamp solicited=0 (#580)"
 
     def test_session_id_never_forwarded(self) -> None:
         """The dead session_id param must NOT appear in the POST body."""
@@ -153,6 +156,7 @@ class TestNoChannelConfigured:
         body = _posted_body(http_mock)
         assert "channel" not in body
         assert "to" not in body
+        assert body.get("solicited") == 0, "chore notify must stamp solicited=0 (#580)"
         assert result["destination"] == "auto"
         assert result["delivered"] is True
 

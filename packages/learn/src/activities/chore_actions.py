@@ -436,9 +436,11 @@ async def send_chore_notification(
     # 3. Build POST body; split channel (platform enum) and to (recipient id)
     #    per alfredDeliver.ts:35.  Omit both when no explicit destination so
     #    ctrl-api's home-channel default is the sole fallback.
+    #    solicited=0: chore notifications are Alfred-initiated (#580).
     body: dict[str, Any] = {
         "message": f"[Chore: {chore_slug}]\n\n{message}",
         "urgency": "normal",
+        "solicited": 0,
     }
     if parsed:
         body["channel"] = parsed[0]  # platform enum: "slack"|"telegram"|"email"
@@ -1283,8 +1285,7 @@ Write the briefing now. Plain prose. Your output is the message Sir sees."""
     # Live delivery: first render the briefing text via a workers subagent
     # (same as preview mode), then POST the rendered text to ctrl-api's
     # /api/v1/notifications, which pushes it outbound via openclaw's
-    # `message.send` tool → Slack/Telegram/etc. The notifications route
-    # handles channel + recipient resolution from the tenant's config.
+    # `message.send` tool → Slack/Telegram/etc.  solicited=0: Alfred-initiated (#580).
     briefing = await _workers_spawn_subagent(
         agent_id="learn-clerk",
         prompt=prompt,
@@ -1306,7 +1307,7 @@ Write the briefing now. Plain prose. Your output is the message Sir sees."""
                 "message": briefing,
                 "urgency": "normal",
                 "session_id": session_id,
-                # agent_id defaults to "main" server-side
+                "solicited": 0,
             },
             headers=headers,
         )
