@@ -198,3 +198,100 @@ class TestMaterialityRuleExtension:
         # Engaged/interruption counts are described as measured, not displacement-derived
         p = self._prompt()
         assert "directly measured" in p or "Engaged" in p
+
+
+# ---------------------------------------------------------------------------
+# Schedule registration (#584) — weekly al-attention-trend-read entry.
+# ---------------------------------------------------------------------------
+
+import datetime as _dt
+import scripts.register_schedules as _reg
+
+
+def _schedule_entry() -> dict:
+    entries = _reg._build_schedule_entries("UTC")
+    found = [e for e in entries if e.get("id") == "al-attention-trend-read"]
+    assert len(found) == 1, f"expected 1 entry, got {len(found)}"
+    return found[0]
+
+
+class TestScheduleEntry:
+    def test_id_and_workflow_name(self):
+        """Schedule id exists and workflow name matches @workflow.defn(name=...)."""
+        from src.workflows.attention_trend_read import AttentionTrendReadWorkflow
+        defn = getattr(AttentionTrendReadWorkflow, "__temporal_workflow_definition", None)
+        assert defn is not None
+        e = _schedule_entry()
+        assert e["id"] == "al-attention-trend-read"
+        assert e["workflow"] == defn.name
+
+    def test_no_duplicates(self):
+        """Re-calling _build_schedule_entries returns exactly one entry."""
+        ids = [e["id"] for e in _reg._build_schedule_entries("UTC")
+               if e["id"] == "al-attention-trend-read"]
+        assert ids == ["al-attention-trend-read"]
+
+    def test_calendar_daily_04_00_local(self):
+        """Schedule must fire DAILY, not weekly.
+
+        trendsTo = now (AttentionPage.tsx:695), so the subject key the UI
+        requests is attention_trend:week:<from>:<today>.  A weekly schedule
+        anchors the key to one fixed day; any other day finds nothing.
+        Daily means the stored key always matches the current day's window.
+
+        The Temporal SDK fills day_of_week with ScheduleRange(0, 6) (all days)
+        when no DOW restriction is set.  A single-day restriction would be
+        ScheduleRange(start=N, end=N) with start==end.  We assert that all
+        7 days are covered so nobody "optimises" this back to weekly.
+        """
+        cal = _schedule_entry()["spec"].calendars[0]
+        assert cal.hour[0].start == 4
+        # All 7 days must be covered (SDK default: start=0, end=6, step=1).
+        # A weekly-only restriction has start==end (e.g. start=1, end=1 for Monday).
+        dow = cal.day_of_week
+        assert dow, "day_of_week must be present"
+        assert not any(r.start == r.end for r in dow), (
+            "schedule must cover all 7 days (daily); "
+            "found single-day restriction — see comment: trendsTo=now means "
+            "the observation key changes every day"
+        )
+
+    def test_timezone_propagated(self):
+        entries = _reg._build_schedule_entries("America/New_York")
+        e = next(x for x in entries if x["id"] == "al-attention-trend-read")
+        assert e["spec"].time_zone_name == "America/New_York"
+
+    def test_args_grain_only(self):
+        """grain is the only schedule arg; from/to are derived at run time."""
+        assert _schedule_entry().get("args") == [{"grain": "week"}]
+
+
+class TestWindowComputation:
+    """_window_for_grain must match the UI's thirteenWeeksAgo()→now() default.
+
+    AttentionPage.tsx line 32:
+        const thirteenWeeksAgo = () => {
+            const d = new Date(); d.setDate(d.getDate() - 91); ...
+        };
+        const [trendsFrom] = useState(thirteenWeeksAgo);  // today − 91 days
+        const [trendsTo]   = useState(now);
+
+    Grain changes period bucketing but NOT the window. Any grain maps to 91 days.
+    """
+
+    def _w(self, ref: _dt.date) -> tuple[_dt.date, _dt.date]:
+        from src.workflows.attention_trend_read import _window_for_grain
+        return _window_for_grain("week", ref)
+
+    def test_window_is_91_days_back(self):
+        """from = ref − 91 days (JS d.setDate(d.getDate() − 91)), to = ref."""
+        ref = _dt.date(2026, 8, 15)
+        from_d, to_d = self._w(ref)
+        assert to_d == ref
+        assert from_d == ref - _dt.timedelta(days=91)
+
+    def test_iso_serialisation(self):
+        """from=2026-05-16 when ref=2026-08-15 (91-day JS arithmetic)."""
+        from_d, to_d = self._w(_dt.date(2026, 8, 15))
+        assert to_d.isoformat() == "2026-08-15"
+        assert from_d.isoformat() == "2026-05-16"
