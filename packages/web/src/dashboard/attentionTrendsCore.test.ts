@@ -4,6 +4,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import {
   derivePeriodLabel, isPartialPeriod, GRAIN_FULL_DAYS,
   deriveNarBars, deriveSeriesMax, deriveTrendsSummary,
@@ -382,4 +384,23 @@ test("deriveRatioHeadline: null peakValue → comparison clause omitted, sentenc
   assert.ok(s !== null, "must return a string even with no peak");
   assert.ok(!s!.includes("it bought"), `comparison clause must be absent when peak is null, got: ${s}`);
   assert.ok(s!.includes("hours") && s!.includes("work"), `sentence must still be grammatical, got: ${s}`);
+});
+
+// ─── The peak helper must actually be wired into the page (#584) ──────────────
+// deriveRatioPeak shipped fully tested and was never called: AttentionPage kept
+// computing the peak inline over ALL periods, so the live headline still
+// benchmarked against a week the engine refuses to price (W24, 13.9x on 0.8h).
+// Same shape as the dead migration in #578 — merged, built, deployed, never ran.
+// A unit test on the helper cannot see this; only the call site can.
+test("AttentionPage computes the ratio peak via deriveRatioPeak, not inline", () => {
+  const src = fs.readFileSync(
+    path.join(import.meta.dirname, "AttentionPage.tsx"), "utf8");
+  assert.match(src, /deriveRatioPeak\(/,
+    "AttentionPage must call deriveRatioPeak — an unfiltered inline peak reintroduces Bug 2");
+  // The defect was the unfiltered scan, not the identifier. peakIdx still exists —
+  // it is now derived FROM deriveRatioPeak's choice so the plot marker and the
+  // sentence name the same week. What must never come back is the reduce over all
+  // periods, which ignores the engagement floor.
+  assert.doesNotMatch(src, /rb\.reduce\(/,
+    "unfiltered peak scan over rb is back; it ignores the engagement floor");
 });
